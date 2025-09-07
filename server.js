@@ -139,6 +139,17 @@ const normalizeMsisdn = input => {
   return digits;
 };
 
+// Credits: tiered by message length
+function calculateCreditsForMessage(message) {
+  const length = String(message || '').length;
+  if (length <= 0) return 0;
+  if (length <= 60) return 1;
+  if (length <= 100) return 2;
+  if (length <= 150) return 3;
+  if (length <= 200) return 4;
+  return -1; // over limit
+}
+
 // Health
 app.get('/health', (_req, res) => res.json({ ok:true, service:'mobivate-proxy', time:new Date().toISOString() }));
 
@@ -157,6 +168,9 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
     if (!isNonEmptyString(message)) {
       return res.status(400).json({ ok:false, error:'Missing "message".' });
     }
+    const msgCredits = calculateCreditsForMessage(message);
+    if (msgCredits === 0) return res.status(400).json({ ok:false, error:'Message cannot be empty' });
+    if (msgCredits < 0) return res.status(400).json({ ok:false, error:'Message too long (max 200 characters)' });
     if (!isNonEmptyString(sender)) {
       return res.status(400).json({ ok:false, error:'Missing "sender".' });
     }
@@ -177,7 +191,7 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
       timeout: 20_000
     });
 
-    res.status(200).json({ ok:true, provider:r.data });
+    res.status(200).json({ ok:true, provider:r.data, creditsUsed: msgCredits });
   } catch (e) {
     if (e.response) {
       return res.status(e.response.status || 502).json({
@@ -200,6 +214,9 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
     const { sender, message, recipients, routeId } = req.body || {};
     if (!isNonEmptyString(sender)) return res.status(400).json({ ok:false, error:'Missing sender' });
     if (!isNonEmptyString(message)) return res.status(400).json({ ok:false, error:'Missing message' });
+    const msgCredits = calculateCreditsForMessage(message);
+    if (msgCredits === 0) return res.status(400).json({ ok:false, error:'Message cannot be empty' });
+    if (msgCredits < 0) return res.status(400).json({ ok:false, error:'Message too long (max 200 characters)' });
 
     // Normalize recipients input: string (with commas/newlines) or array
     let list = [];
@@ -219,8 +236,9 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
 
     // Check credits
     const store = readStore();
-    if (store.credits < uniqueRecipients.length) {
-      return res.status(402).json({ ok:false, error:'Insufficient credits', needed: uniqueRecipients.length, credits: store.credits });
+    const totalNeeded = uniqueRecipients.length * msgCredits;
+    if (store.credits < totalNeeded) {
+      return res.status(402).json({ ok:false, error:'Insufficient credits', needed: totalNeeded, perMessage: msgCredits, recipients: uniqueRecipients.length, credits: store.credits });
     }
 
     // Send sequentially to respect provider rate, collect results
@@ -246,11 +264,11 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
       }
     }
 
-    // Deduct credits for all attempted messages (1 credit per recipient)
-    const after = writeStore({ credits: store.credits - uniqueRecipients.length });
-    appendLog({ type:'batch_send', sender, count: uniqueRecipients.length, success, messagePreview: message.slice(0, 40), creditsAfter: after.credits });
+    // Deduct credits based on tier (msgCredits per recipient)
+    const after = writeStore({ credits: store.credits - totalNeeded });
+    appendLog({ type:'batch_send', sender, count: uniqueRecipients.length, success, msgLen: String(message||'').length, msgCredits, totalCreditsUsed: totalNeeded, messagePreview: message.slice(0, 40), creditsAfter: after.credits });
 
-    return res.json({ ok:true, attempted: uniqueRecipients.length, success, credits: after.credits, results });
+    return res.json({ ok:true, attempted: uniqueRecipients.length, success, perMessage: msgCredits, totalUsed: totalNeeded, credits: after.credits, results });
   } catch (e) {
     res.status(500).json({ ok:false, error: e.message || 'Server error' });
   }
