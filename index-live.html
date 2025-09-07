@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMS Sender</title>
+    <style>
+        /* 
+        ⚠️ SECURITY WARNING ⚠️
+        This app exposes the API key to anyone who loads the page.
+        This is not secure for production use.
+        For real deployments, use a server-side proxy to protect the API key.
+        */
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ffffff;
+        }
+
+        .password-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .password-modal.hidden {
+            display: none;
+        }
+
+        .password-card {
+            background: #2a2a2a;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            min-width: 300px;
+        }
+
+        .password-card h2 {
+            color: #f44d4d;
+            margin-bottom: 1rem;
+            font-size: 1.5rem;
+        }
+
+        .password-card input {
+            width: 100%;
+            padding: 0.75rem;
+            margin: 1rem 0;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background: #1a1a1a;
+            color: #ffffff;
+            font-size: 1rem;
+        }
+
+        .password-card input:focus {
+            outline: none;
+            border-color: #f44d4d;
+        }
+
+        .password-card button {
+            background: #f44d4d;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .password-card button:hover {
+            background: #e03d3d;
+        }
+
+        .error-message {
+            color: #f44d4d;
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+
+        .main-container {
+            background: #2a2a2a;
+            padding: 2rem;
+            border-radius: 16px;
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+            width: 100%;
+            max-width: 500px;
+            margin: 1rem;
+        }
+
+        .main-container h1 {
+            color: #f44d4d;
+            text-align: center;
+            margin-bottom: 2rem;
+            font-size: 2rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #cccccc;
+            font-weight: 500;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background: #1a1a1a;
+            color: #ffffff;
+            font-size: 1rem;
+            font-family: inherit;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #f44d4d;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .char-count {
+            text-align: right;
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 0.25rem;
+        }
+
+        .char-count.warning {
+            color: #f44d4d;
+        }
+
+        .send-button {
+            width: 100%;
+            background: #f44d4d;
+            color: white;
+            border: none;
+            padding: 1rem;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 1rem;
+        }
+
+        .send-button:hover:not(:disabled) {
+            background: #e03d3d;
+            transform: translateY(-2px);
+        }
+
+        .send-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .response-container {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: #1a1a1a;
+            border-radius: 8px;
+            border: 1px solid #444;
+        }
+
+        .response-container h3 {
+            color: #f44d4d;
+            margin-bottom: 1rem;
+        }
+
+        .response-container pre {
+            background: #0a0a0a;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .error {
+            color: #f44d4d;
+            border-color: #f44d4d;
+        }
+
+        .success {
+            color: #4caf50;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #f44d4d;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .api-info {
+            background: #1a1a1a;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            border: 1px solid #444;
+        }
+
+        .api-info h4 {
+            color: #f44d4d;
+            margin-bottom: 0.5rem;
+        }
+
+        .api-info p {
+            font-size: 0.9rem;
+            color: #888;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <!-- Password Gate Modal -->
+    <div class="password-modal" id="passwordModal">
+        <div class="password-card">
+            <h2>🔐 Access Verification</h2>
+            <p>Please enter password to access SMS Sender</p>
+            <input type="password" id="passwordInput" placeholder="Enter password" autocomplete="off">
+            <div class="error-message hidden" id="passwordError">Wrong password, please try again</div>
+            <button onclick="checkPassword()">Confirm</button>
+        </div>
+    </div>
+
+    <!-- Main App Container -->
+    <div class="main-container hidden" id="mainApp">
+        <h1>📱 SMS Sender</h1>
+        
+        <form id="smsForm">
+            <div class="form-group">
+                <label for="phone">Phone Number (Israel)</label>
+                <input 
+                    type="text" 
+                    id="phone" 
+                    placeholder="972546934003" 
+                    maxlength="15"
+                    required
+                >
+                <div class="error-message hidden" id="phoneError">Please enter a valid Israeli phone number (format: 972XXXXXXXXX)</div>
+            </div>
+
+            <div class="form-group">
+                <label for="message">Message Content</label>
+                <textarea 
+                    id="message" 
+                    placeholder="Enter message to send..." 
+                    maxlength="612"
+                    required
+                ></textarea>
+                <div class="char-count" id="charCount">0 / 612 characters</div>
+                <div class="error-message hidden" id="messageError">Message content cannot be empty</div>
+            </div>
+
+            <button type="submit" class="send-button" id="sendButton">
+                Send SMS
+            </button>
+        </form>
+
+        <div class="response-container hidden" id="responseContainer">
+            <h3>API Response</h3>
+            <pre id="responseText"></pre>
+        </div>
+
+        <div class="api-info">
+            <h4>API Information</h4>
+            <p><strong>Endpoint:</strong> https://api.mobivatebulksms.com/send/single</p>
+            <p><strong>Method:</strong> POST</p>
+            <p><strong>Headers:</strong> Content-Type: application/json, Authorization: Bearer [API_KEY]</p>
+            <p><strong>Body:</strong> {"originator": "WebSender1", "recipient": "972XXXXXXXXX", "body": "message"}</p>
+        </div>
+    </div>
+
+    <script>
+        // Page password - please change this password in production
+        const PAGE_PASSWORD = 'change-me';
+
+        // DOM elements
+        const passwordModal = document.getElementById('passwordModal');
+        const mainApp = document.getElementById('mainApp');
+        const passwordInput = document.getElementById('passwordInput');
+        const passwordError = document.getElementById('passwordError');
+        const smsForm = document.getElementById('smsForm');
+        const phoneInput = document.getElementById('phone');
+        const messageInput = document.getElementById('message');
+        const phoneError = document.getElementById('phoneError');
+        const messageError = document.getElementById('messageError');
+        const charCount = document.getElementById('charCount');
+        const sendButton = document.getElementById('sendButton');
+        const responseContainer = document.getElementById('responseContainer');
+        const responseText = document.getElementById('responseText');
+
+        // Password verification
+        function checkPassword() {
+            const inputPassword = passwordInput.value.trim();
+            if (inputPassword === PAGE_PASSWORD) {
+                passwordModal.classList.add('hidden');
+                mainApp.classList.remove('hidden');
+                passwordInput.value = '';
+                passwordError.classList.add('hidden');
+            } else {
+                passwordError.classList.remove('hidden');
+                passwordInput.value = '';
+                passwordInput.focus();
+            }
+        }
+
+        // Enter key to submit password
+        passwordInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                checkPassword();
+            }
+        });
+
+        // Phone number validation regex - Israeli numbers (972 followed by 8-12 digits)
+        const phoneRegex = /^972\d{8,12}$/;
+
+        // Real-time phone number validation
+        phoneInput.addEventListener('input', function() {
+            const phone = phoneInput.value.trim();
+            if (phone && !phoneRegex.test(phone)) {
+                phoneError.classList.remove('hidden');
+                phoneInput.classList.add('error');
+            } else {
+                phoneError.classList.add('hidden');
+                phoneInput.classList.remove('error');
+            }
+        });
+
+        // Character count
+        messageInput.addEventListener('input', function() {
+            const length = messageInput.value.length;
+            charCount.textContent = `${length} / 612 characters`;
+            
+            if (length > 580) {
+                charCount.classList.add('warning');
+            } else {
+                charCount.classList.remove('warning');
+            }
+        });
+
+        // Form submission
+        smsForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const phone = phoneInput.value.trim();
+            const message = messageInput.value.trim();
+            
+            // Clear previous errors
+            phoneError.classList.add('hidden');
+            messageError.classList.add('hidden');
+            phoneInput.classList.remove('error');
+            messageInput.classList.remove('error');
+            
+            // Validate input
+            let hasError = false;
+            
+            if (!phoneRegex.test(phone)) {
+                phoneError.classList.remove('hidden');
+                phoneInput.classList.add('error');
+                hasError = true;
+            }
+            
+            if (!message) {
+                messageError.classList.remove('hidden');
+                messageInput.classList.add('error');
+                hasError = true;
+            }
+            
+            if (hasError) {
+                return;
+            }
+            
+            // Prepare to send
+            sendButton.disabled = true;
+            sendButton.innerHTML = '<span class="loading"></span>Sending...';
+            responseContainer.classList.add('hidden');
+            
+            try {
+                // Remove non-digit characters from phone number
+                const digitsOnlyPhone = phone.replace(/\D/g, '');
+                
+                // Prepare API request
+                const requestBody = {
+                    originator: "WebSender1",
+                    recipient: digitsOnlyPhone,
+                    body: message
+                };
+                
+                // Direct API call to Mobivate (will show CORS error in browser console)
+                const response = await fetch('https://api.mobivatebulksms.com/send/single', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer v-c65a557c-f6e9-42b4-a092-628b4780538c:a288c95d-0867-4859-9eae-712d4d91f122'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+                
+                const responseData = await response.json();
+                
+                // Display response
+                responseContainer.classList.remove('hidden');
+                responseText.textContent = JSON.stringify(responseData, null, 2);
+                
+                if (response.ok) {
+                    responseText.className = 'success';
+                    // Clear form
+                    smsForm.reset();
+                    charCount.textContent = '0 / 612 characters';
+                    charCount.classList.remove('warning');
+                } else {
+                    responseText.className = 'error';
+                }
+                
+            } catch (error) {
+                // Display error
+                responseContainer.classList.remove('hidden');
+                responseText.textContent = `Network error: ${error.message}`;
+                responseText.className = 'error';
+            } finally {
+                // Restore button state
+                sendButton.disabled = false;
+                sendButton.innerHTML = 'Send SMS';
+            }
+        });
+
+        // Focus password input on page load
+        window.addEventListener('load', function() {
+            passwordInput.focus();
+        });
+    </script>
+</body>
+</html>

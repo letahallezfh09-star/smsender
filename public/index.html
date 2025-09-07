@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMS Sender</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ffffff;
+        }
+
+        .main-container {
+            background: #2a2a2a;
+            padding: 2rem;
+            border-radius: 16px;
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+            width: 100%;
+            max-width: 500px;
+            margin: 1rem;
+        }
+
+        .main-container h1 {
+            color: #f44d4d;
+            text-align: center;
+            margin-bottom: 2rem;
+            font-size: 2rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #cccccc;
+            font-weight: 500;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background: #1a1a1a;
+            color: #ffffff;
+            font-size: 1rem;
+            font-family: inherit;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #f44d4d;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .char-count {
+            text-align: right;
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 0.25rem;
+        }
+
+        .char-count.warning {
+            color: #f44d4d;
+        }
+
+        .send-button {
+            width: 100%;
+            background: #f44d4d;
+            color: white;
+            border: none;
+            padding: 1rem;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 1rem;
+        }
+
+        .send-button:hover:not(:disabled) {
+            background: #e03d3d;
+            transform: translateY(-2px);
+        }
+
+        .send-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .response-container {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: #1a1a1a;
+            border-radius: 8px;
+            border: 1px solid #444;
+        }
+
+        .response-container h3 {
+            color: #f44d4d;
+            margin-bottom: 1rem;
+        }
+
+        .response-container pre {
+            background: #0a0a0a;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .error {
+            color: #f44d4d;
+            border-color: #f44d4d;
+        }
+
+        .success {
+            color: #4caf50;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #f44d4d;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .api-info {
+            background: #1a1a1a;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            border: 1px solid #444;
+        }
+
+        .api-info h4 {
+            color: #f44d4d;
+            margin-bottom: 0.5rem;
+        }
+
+        .api-info p {
+            font-size: 0.9rem;
+            color: #888;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <h1>📱 SMS Sender</h1>
+        
+        <form id="smsForm">
+            <div class="form-group">
+                <label for="sender">Sender Name</label>
+                <input 
+                    type="text" 
+                    id="sender" 
+                    placeholder="WebSender1" 
+                    maxlength="11"
+                    value="WebSender1"
+                    required
+                >
+                <div class="error-message hidden" id="senderError">Sender name cannot be empty</div>
+            </div>
+
+            <div class="form-group">
+                <label for="phone">Phone Number (Israel)</label>
+                <input 
+                    type="text" 
+                    id="phone" 
+                    placeholder="972-XXXXXXXXX or 972XXXXXXXXX" 
+                    maxlength="13"
+                    required
+                >
+                <div class="error-message hidden" id="phoneError">Please enter a valid Israeli phone number (format: 972-XXXXXXXXX or 972XXXXXXXXX)</div>
+            </div>
+
+            <div class="form-group">
+                <label for="message">Message Content</label>
+                <textarea 
+                    id="message" 
+                    placeholder="Enter message to send..." 
+                    maxlength="612"
+                    required
+                ></textarea>
+                <div class="char-count" id="charCount">0 / 612 characters</div>
+                <div class="error-message hidden" id="messageError">Message content cannot be empty</div>
+            </div>
+
+            <button type="submit" class="send-button" id="sendButton">
+                Send SMS
+            </button>
+        </form>
+
+        <div class="response-container hidden" id="responseContainer">
+            <h3>API Response</h3>
+            <pre id="responseText"></pre>
+        </div>
+
+        <div class="api-info">
+            <h4>API Information</h4>
+            <p><strong>Endpoint:</strong> /api/sms/send</p>
+            <p><strong>Method:</strong> POST</p>
+            <p><strong>Body:</strong> {"to": "972-XXXXXXXXX or 972XXXXXXXXX", "message": "your message", "sender": "SenderName"}</p>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Office SMS Sender</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0b0c10; color:#eaf0f6; min-height:100vh; display:flex; align-items:center; justify-content:center; }
+    .card { width: 100%; max-width: 720px; background:#12151b; border:1px solid #1f2633; border-radius:14px; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,0.35); }
+    h1 { font-size:22px; color:#77bdfb; margin-bottom:12px; }
+    .desc { color:#9fb3c8; font-size:14px; margin-bottom:18px; }
+    .grid { display:grid; gap:14px; }
+    label { display:block; font-weight:600; color:#c7d3e0; margin-bottom:6px; }
+    input[type="text"], textarea { width:100%; background:#0d1117; border:1px solid #283142; color:#eaf0f6; padding:10px 12px; border-radius:10px; font-size:14px; }
+    textarea { min-height:120px; resize:vertical; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .muted { color:#8ea2b4; font-size:12px; }
+    .warning { color:#ffb86c; }
+    .error { color:#ff6b6b; }
+    .success { color:#5bd68a; }
+    .btn { background:#2b6cb0; border:none; color:white; padding:10px 16px; border-radius:10px; font-weight:600; cursor:pointer; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .toolbar { display:flex; justify-content:space-between; align-items:center; margin:10px 0 6px; }
+    .stat { background:#0d1117; border:1px solid #283142; border-radius:10px; padding:8px 12px; font-size:13px; color:#9fb3c8; }
+    .response { margin-top:14px; background:#0d1117; border:1px solid #283142; border-radius:10px; padding:12px; white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Office SMS Sender</h1>
+    <div class="desc">1 credit = 1 SMS. You can enter multiple numbers separated by comma, space, or newline.</div>
+
+    <div class="toolbar">
+      <div class="stat" id="creditsStat">Remaining credits: --</div>
+      <button class="btn" id="refreshCredits">Refresh credits</button>
+    </div>
+
+    <div class="grid">
+      <div id="expiredBanner" style="display:none; background:#331d1d; border:1px solid #5b2d32; color:#ff6b6b; padding:10px 12px; border-radius:10px; font-weight:600;">
+        Subscription expired. Please contact the administrator to renew.
+      </div>
+      <div>
+        <label for="sender">Sender name</label>
+        <input id="sender" type="text" placeholder="e.g. OfficeSMS" maxlength="11" />
+        <div class="muted">11 alphanumeric characters or up to 15 digits.</div>
+        <div class="error" id="senderErr" style="display:none">Please enter a valid sender</div>
+      </div>
+
+      <div>
+        <label for="numbers">Recipients (multiple allowed)</label>
+        <textarea id="numbers" placeholder="9725XXXXXXXX\n9725YYYYYYYY"></textarea>
+        <div class="muted">Digits only, international format without +. Separate by comma, space, or newline.</div>
+        <div class="error" id="numbersErr" style="display:none">Enter at least one valid number (starts with 972, total 9–15 digits)</div>
+      </div>
+
+      <div>
+        <label for="message">Message</label>
+        <textarea id="message" maxlength="612" placeholder="Enter the message to send"></textarea>
+        <div class="row">
+          <span class="muted" id="charInfo">0 / 612 characters</span>
+          <span class="muted">Up to 160 chars/part (GSM), 70 chars/part (Unicode)</span>
+        </div>
+        <div class="error" id="messageErr" style="display:none">Message cannot be empty</div>
+      </div>
+
+      <div class="row">
+        <button class="btn" id="sendBtn">Send</button>
+        <div class="muted" id="hint"></div>
+      </div>
+
+      <div class="response" id="resp" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Expired modal overlay -->
+  <div id="expiredModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:9999; align-items:center; justify-content:center;">
+    <div style="background:#1a1f2a; border:1px solid #5b2d32; color:#eaf0f6; padding:24px; border-radius:12px; max-width:520px; width:90%; text-align:center;">
+      <h2 style="color:#ff6b6b; margin-bottom:12px;">Subscription expired</h2>
+      <p style="color:#c7d3e0; margin-bottom:16px;">Please contact the administrator to renew your subscription to continue sending SMS.</p>
+      <button class="btn" id="reloadBtn">Reload</button>
+    </div>
+  </div>
+
+  <!-- Login modal overlay -->
+  <div id="loginModal" style="position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:9998; display:flex; align-items:center; justify-content:center;">
+    <div style="background:#1a1f2a; border:1px solid #283142; color:#eaf0f6; padding:24px; border-radius:12px; max-width:420px; width:90%;">
+      <h2 style="color:#77bdfb; margin-bottom:12px; text-align:center;">Office Login</h2>
+      <form id="loginForm" style="display:grid; gap:10px;">
+        <div>
+          <label>Username</label>
+          <input id="lu" name="username" autocomplete="off" type="text" style="width:100%; background:#0d1117; border:1px solid #283142; color:#eaf0f6; padding:10px 12px; border-radius:10px;">
+        </div>
+        <div>
+          <label>Password</label>
+          <input id="lp" name="password" autocomplete="off" type="password" style="width:100%; background:#0d1117; border:1px solid #283142; color:#eaf0f6; padding:10px 12px; border-radius:10px;">
+        </div>
+        <button type="submit" class="btn" id="loginBtn">Login</button>
+        <div class="error" id="loginErr" style="display:none; text-align:center;">Invalid credentials</div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Loading overlay (post-login status check) -->
+  <div id="loadingOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:9997; align-items:center; justify-content:center;">
+    <div style="background:#0d1117; border:1px solid #283142; color:#eaf0f6; padding:20px 24px; border-radius:10px; font-weight:600;">
+      Checking subscription status...
+    </div>
+  </div>
+
+  <script>
+    const creditsStat = document.getElementById('creditsStat');
+    const refreshBtn = document.getElementById('refreshCredits');
+    const senderEl = document.getElementById('sender');
+    const numbersEl = document.getElementById('numbers');
+    const messageEl = document.getElementById('message');
+    const charInfo = document.getElementById('charInfo');
+    const sendBtn = document.getElementById('sendBtn');
+    const resp = document.getElementById('resp');
+    const numbersErr = document.getElementById('numbersErr');
+    const senderErr = document.getElementById('senderErr');
+    const messageErr = document.getElementById('messageErr');
+    const expiredBanner = document.getElementById('expiredBanner');
+    const expiredModal = document.getElementById('expiredModal');
+    const reloadBtn = document.getElementById('reloadBtn');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    let isExpired = false;
+    let authHeader = '';
+
+    function setResp(text, ok) {
+      resp.style.display = 'block';
+      resp.textContent = text;
+      resp.style.borderColor = ok ? '#294d39' : '#5b2d32';
+      resp.style.color = ok ? '#5bd68a' : '#ff6b6b';
+    }
+
+    function validateSender(v){
+      if(!v) return false;
+      const alnum = /^[A-Za-z0-9]{1,11}$/;
+      const digits = /^\d{1,15}$/;
+      return alnum.test(v) || digits.test(v);
+    }
+    function normalizeNumbers(input){
+      const parts = String(input||'').split(/[\s,;]+/).map(s=>s.trim()).filter(Boolean);
+      const norm = [];
+      for(const p of parts){
+        const digits = p.replace(/\D/g,'');
+        if(/^972\d{8,12}$/.test(digits)) norm.push(digits);
+      }
+      return Array.from(new Set(norm));
+    }
+
+    messageEl.addEventListener('input',()=>{
+      const len = messageEl.value.length;
+      charInfo.textContent = `${len} / 612 characters`;
+      charInfo.className = 'muted' + (len>580?' warning':'');
+    });
+
+    async function fetchCredits(){
+      if (!authHeader) { loginModal.style.display = 'flex'; return; }
+      loadingOverlay.style.display = 'flex';
+      try{
+        const [r1, r2] = await Promise.all([
+          fetch('/api/credits/public', { headers: { 'x-auth': authHeader, 'cache-control':'no-store' } }),
+          fetch('/api/subscription/public', { headers: { 'x-auth': authHeader, 'cache-control':'no-store' } })
+        ]);
+        if (r1.status === 401 || r2.status === 401) {
+          authHeader = '';
+          loginModal.style.display = 'flex';
+          // Clear expired UI until authenticated
+          isExpired = false;
+          expiredBanner.style.display = 'none';
+          expiredModal.style.display = 'none';
+          creditsStat.textContent = 'Remaining credits: --';
+          return;
+        }
+        const d = await r1.json();
+        const sub = await r2.json();
+        if(r1.ok && d.ok){
+          creditsStat.textContent = 'Remaining credits: ' + d.credits;
+        } else {
+          creditsStat.textContent = 'Remaining credits: --';
+        }
+        if (r2.ok && sub.ok) {
+          isExpired = !!sub.isExpired;
+          expiredBanner.style.display = isExpired ? 'block' : 'none';
+          expiredModal.style.display = isExpired ? 'flex' : 'none';
+          // disable inputs when expired
+          senderEl.disabled = isExpired;
+          numbersEl.disabled = isExpired;
+          messageEl.disabled = isExpired;
+          sendBtn.disabled = isExpired;
+        }
+      }catch{
+        creditsStat.textContent = 'Remaining credits: --';
+      } finally { loadingOverlay.style.display = 'none'; }
+    }
+    refreshBtn.addEventListener('click', ()=>{ if(authHeader){ fetchCredits(); } else { loginModal.style.display = 'flex'; } });
+
+    sendBtn.addEventListener('click', async ()=>{
+      if (!authHeader) {
+        loginModal.style.display = 'flex';
+        return;
+      }
+      if (isExpired) {
+        setResp('Subscription expired. Please contact the administrator to renew.', false);
+        return;
+      }
+      numbersErr.style.display = 'none'; senderErr.style.display='none'; messageErr.style.display='none';
+      resp.style.display='none';
+
+      const sender = senderEl.value.trim();
+      const list = normalizeNumbers(numbersEl.value);
+      const message = messageEl.value.trim();
+
+      let hasErr = false;
+      if(!validateSender(sender)) { senderErr.style.display='block'; hasErr = true; }
+      if(list.length===0) { numbersErr.style.display='block'; hasErr = true; }
+      if(!message) { messageErr.style.display='block'; hasErr = true; }
+      if(hasErr) return;
+
+      sendBtn.disabled = true; sendBtn.textContent = 'Sending...';
+      try{
+        const r = await fetch('/api/sms/send-batch', {
+          method:'POST', headers:{ 'Content-Type':'application/json', 'x-auth': authHeader },
+          body: JSON.stringify({ sender, recipients: list, message })
+        });
+        const data = await r.json();
+        if(r.ok && data.ok){
+          setResp(`Success: ${data.success}/${data.attempted}, remaining credits: ${data.credits}`, true);
+        } else {
+          setResp(`Failed: ${data.error||'Unknown error'} (needed: ${data.needed||'-'}, credits: ${data.credits||'-'})`, false);
+        }
+      }catch(e){
+        setResp('Network error: '+ e.message, false);
+      }finally{
+        sendBtn.disabled = false; sendBtn.textContent = 'Send';
+      }
+    });
+    reloadBtn.addEventListener('click', ()=> location.reload());
+    // Login modal logic
+    const loginModal = document.getElementById('loginModal');
+    const lu = document.getElementById('lu');
+    const lp = document.getElementById('lp');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginErr = document.getElementById('loginErr');
+    function buildAuth(user, pass){
+      return 'Basic ' + btoa(user + ':' + pass);
+    }
+    async function tryLogin(){
+      loginErr.style.display = 'none';
+      authHeader = buildAuth(lu.value.trim(), lp.value.trim());
+      const r = await fetch('/api/credits/public', { headers: { 'x-auth': authHeader } });
+      if (r.status === 200) {
+        // hide any stale expired UI; we'll re-evaluate after auth
+        expiredBanner.style.display = 'none';
+        expiredModal.style.display = 'none';
+        loginModal.style.display = 'none';
+        fetchCredits();
+      } else {
+        authHeader = '';
+        loginErr.style.display = 'block';
+      }
+    }
+    document.getElementById('loginForm').addEventListener('submit', function(e){ e.preventDefault(); tryLogin(); });
+  </script>
+  <script>
+    // Basic anti-inspect deterrents (not bulletproof)
+    document.addEventListener('contextmenu', e => e.preventDefault());
+    document.addEventListener('keydown', function(e){
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 's' || e.key === 'i' || e.key === 'j')) {
+        e.preventDefault();
+      }
+      if (e.key === 'F12') { e.preventDefault(); }
+    });
+  </script>
+</body>
+</html>
+
+
