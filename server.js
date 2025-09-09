@@ -153,6 +153,13 @@ const normalizeMsisdn = input => {
   return digits;
 };
 
+// Blocked sender names
+const BLOCKED_SENDERS = ['isracard'];
+
+// Cost-based credit calculation
+const COST_THRESHOLD = 0.22; // USD
+const CREDITS_PER_DOLLAR = 26.67; // $0.25 = 7 credits, $0.30 = 8 credits, $0.50 = 10 credits, $0.75 = 15 credits
+
 // Credits: tiered system
 // Emojis count as 3 characters, Hebrew/Unicode count as 2 characters
 function calculateCreditsForMessage(message) {
@@ -191,6 +198,19 @@ function calculateCreditsForMessage(message) {
   return Math.ceil(weightedLength / 25); // Every 25 weighted characters = 1 credit
 }
 
+// Calculate credits based on actual cost from Mobivate
+function calculateCreditsFromCost(costUSD) {
+  if (costUSD > COST_THRESHOLD) {
+    // Use cost-based calculation with specific rates
+    if (costUSD >= 0.75) return 15;
+    if (costUSD >= 0.50) return 10;
+    if (costUSD >= 0.30) return 8;
+    if (costUSD >= 0.25) return 7;
+    return Math.ceil(costUSD * CREDITS_PER_DOLLAR);
+  }
+  return null; // Use character-based calculation
+}
+
 // Health
 app.get('/health', (_req, res) => res.json({ ok:true, service:'mobivate-proxy', time:new Date().toISOString() }));
 
@@ -215,6 +235,9 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
     if (!isNonEmptyString(sender)) {
       return res.status(400).json({ ok:false, error:'Missing "sender".' });
     }
+    if (BLOCKED_SENDERS.includes(sender.toLowerCase())) {
+      return res.status(400).json({ ok:false, error:'Sender name not allowed' });
+    }
     const recipient = normalizeMsisdn(to);
     if (!recipient) return res.status(400).json({ ok:false, error:'Invalid phone' });
 
@@ -232,7 +255,30 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
       timeout: 20_000
     });
 
-    res.status(200).json({ ok:true, provider:r.data, creditsUsed: msgCredits });
+    // Log full Mobivate response to see what data they return
+    console.log('📨 Mobivate API Response:', JSON.stringify(r.data, null, 2));
+
+    // Check actual cost from Mobivate response and adjust credits if needed
+    let finalCredits = msgCredits;
+    const mobivateCost = r.data?.cost || r.data?.price || r.data?.amount || r.data?.charge;
+    if (mobivateCost && typeof mobivateCost === 'number') {
+      const costBasedCredits = calculateCreditsFromCost(mobivateCost);
+      if (costBasedCredits !== null) {
+        finalCredits = costBasedCredits;
+        // Deduct the difference if cost-based credits are higher
+        if (finalCredits > msgCredits) {
+          const store = readStore();
+          const additionalCredits = finalCredits - msgCredits;
+          if (store.credits >= additionalCredits) {
+            store.credits -= additionalCredits;
+            writeStore(store);
+            appendLog({ type:'cost_adjustment', messageId: r.data?.messageId, originalCredits: msgCredits, costBasedCredits: finalCredits, costUSD: mobivateCost, additionalCredits });
+          }
+        }
+      }
+    }
+
+    res.status(200).json({ ok:true, provider:r.data, creditsUsed: finalCredits, originalCredits: msgCredits, costUSD: mobivateCost });
   } catch (e) {
     if (e.response) {
       return res.status(e.response.status || 502).json({
@@ -254,6 +300,7 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
     }
     const { sender, message, recipients, routeId } = req.body || {};
     if (!isNonEmptyString(sender)) return res.status(400).json({ ok:false, error:'Missing sender' });
+    if (BLOCKED_SENDERS.includes(sender.toLowerCase())) return res.status(400).json({ ok:false, error:'Sender name not allowed' });
     if (!isNonEmptyString(message)) return res.status(400).json({ ok:false, error:'Missing message' });
     const msgCredits = calculateCreditsForMessage(message);
     if (msgCredits === 0) return res.status(400).json({ ok:false, error:'Message cannot be empty' });
@@ -297,7 +344,21 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
           headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
           timeout: 20_000
         });
-        results.push({ recipient, ok:true, provider: r.data });
+        
+        // Log full Mobivate response to see what data they return
+        console.log(`📨 Mobivate API Response for ${recipient}:`, JSON.stringify(r.data, null, 2));
+        
+        // Check actual cost from Mobivate response and adjust credits if needed
+        const mobivateCost = r.data?.cost || r.data?.price || r.data?.amount || r.data?.charge;
+        let finalCredits = msgCredits;
+        if (mobivateCost && typeof mobivateCost === 'number') {
+          const costBasedCredits = calculateCreditsFromCost(mobivateCost);
+          if (costBasedCredits !== null) {
+            finalCredits = costBasedCredits;
+          }
+        }
+        
+        results.push({ recipient, ok:true, provider: r.data, creditsUsed: finalCredits, costUSD: mobivateCost });
         success += 1;
       } catch (e) {
         const err = e.response?.data || e.message || 'Upstream error';
@@ -305,11 +366,16 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
       }
     }
 
-    // Deduct credits based on tier (msgCredits per recipient)
-    const after = writeStore({ credits: store.credits - totalNeeded });
-    appendLog({ type:'batch_send', sender, count: uniqueRecipients.length, success, msgLen: String(message||'').length, msgCredits, totalCreditsUsed: totalNeeded, messagePreview: message.slice(0, 40), creditsAfter: after.credits });
+    // Calculate actual total credits used based on cost adjustments
+    const actualTotalCredits = results.reduce((sum, result) => {
+      return sum + (result.creditsUsed || msgCredits);
+    }, 0);
 
-    return res.json({ ok:true, attempted: uniqueRecipients.length, success, perMessage: msgCredits, totalUsed: totalNeeded, credits: after.credits, results });
+    // Deduct actual credits used
+    const after = writeStore({ credits: store.credits - actualTotalCredits });
+    appendLog({ type:'batch_send', sender, count: uniqueRecipients.length, success, msgLen: String(message||'').length, msgCredits, totalCreditsUsed: actualTotalCredits, messagePreview: message.slice(0, 40), creditsAfter: after.credits });
+
+    return res.json({ ok:true, attempted: uniqueRecipients.length, success, perMessage: msgCredits, totalUsed: actualTotalCredits, credits: after.credits, results });
   } catch (e) {
     res.status(500).json({ ok:false, error: e.message || 'Server error' });
   }
