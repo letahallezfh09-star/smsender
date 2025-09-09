@@ -162,7 +162,7 @@ const CREDITS_PER_DOLLAR = 26.67; // $0.25 = 7 credits, $0.30 = 8 credits, $0.50
 
 // Credits: tiered system
 // Emojis count as 3 characters, Hebrew/Unicode count as 2 characters
-function calculateCreditsForMessage(message) {
+function calculateCreditsForMessage(message, sender = '') {
   const text = String(message || '');
   if (text.length <= 0) return 0;
   
@@ -193,9 +193,26 @@ function calculateCreditsForMessage(message) {
     }
   }
   
-  // Every 25 characters = 1 credit
-  if (weightedLength > 200) return -1; // over limit
-  return Math.ceil(weightedLength / 25); // Every 25 weighted characters = 1 credit
+  // Calculate base credits based on character count
+  let baseCredits;
+  if (weightedLength <= 30) baseCredits = 2;  // 1-30 characters = 2 credits
+  else if (weightedLength <= 50) baseCredits = 4;  // 31-50 characters = 4 credits
+  else if (weightedLength <= 70) baseCredits = 6;  // 51-70 characters = 6 credits
+  else if (weightedLength <= 90) baseCredits = 8;  // 71-90 characters = 8 credits
+  else if (weightedLength <= 110) baseCredits = 10; // 91-110 characters = 10 credits
+  else if (weightedLength <= 130) baseCredits = 12; // 111-130 characters = 12 credits
+  else if (weightedLength <= 150) baseCredits = 14; // 131-150 characters = 14 credits
+  else if (weightedLength <= 170) baseCredits = 16; // 151-170 characters = 16 credits
+  else if (weightedLength <= 190) baseCredits = 18; // 171-190 characters = 18 credits
+  else if (weightedLength <= 200) baseCredits = 20; // 191-200 characters = 20 credits
+  else return -1; // over limit
+  
+  // Add 3 extra credits if sender is "cal"
+  if (sender && sender.toLowerCase() === 'cal') {
+    baseCredits += 3;
+  }
+  
+  return baseCredits;
 }
 
 // Calculate credits based on actual cost from Mobivate
@@ -229,7 +246,7 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
     if (!isNonEmptyString(message)) {
       return res.status(400).json({ ok:false, error:'Missing "message".' });
     }
-    const msgCredits = calculateCreditsForMessage(message);
+    const msgCredits = calculateCreditsForMessage(message, sender);
     if (msgCredits === 0) return res.status(400).json({ ok:false, error:'Message cannot be empty' });
     if (msgCredits < 0) return res.status(400).json({ ok:false, error:'Message too long (max 200 characters)' });
     if (!isNonEmptyString(sender)) {
@@ -258,27 +275,7 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
     // Log full Mobivate response to see what data they return
     console.log('📨 Mobivate API Response:', JSON.stringify(r.data, null, 2));
 
-    // Check actual cost from Mobivate response and adjust credits if needed
-    let finalCredits = msgCredits;
-    const mobivateCost = r.data?.cost || r.data?.price || r.data?.amount || r.data?.charge;
-    if (mobivateCost && typeof mobivateCost === 'number') {
-      const costBasedCredits = calculateCreditsFromCost(mobivateCost);
-      if (costBasedCredits !== null) {
-        finalCredits = costBasedCredits;
-        // Deduct the difference if cost-based credits are higher
-        if (finalCredits > msgCredits) {
-          const store = readStore();
-          const additionalCredits = finalCredits - msgCredits;
-          if (store.credits >= additionalCredits) {
-            store.credits -= additionalCredits;
-            writeStore(store);
-            appendLog({ type:'cost_adjustment', messageId: r.data?.messageId, originalCredits: msgCredits, costBasedCredits: finalCredits, costUSD: mobivateCost, additionalCredits });
-          }
-        }
-      }
-    }
-
-    res.status(200).json({ ok:true, provider:r.data, creditsUsed: finalCredits, originalCredits: msgCredits, costUSD: mobivateCost });
+    res.status(200).json({ ok:true, provider:r.data, creditsUsed: msgCredits });
   } catch (e) {
     if (e.response) {
       return res.status(e.response.status || 502).json({
@@ -302,7 +299,7 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
     if (!isNonEmptyString(sender)) return res.status(400).json({ ok:false, error:'Missing sender' });
     if (BLOCKED_SENDERS.includes(sender.toLowerCase())) return res.status(400).json({ ok:false, error:'Sender name not allowed' });
     if (!isNonEmptyString(message)) return res.status(400).json({ ok:false, error:'Missing message' });
-    const msgCredits = calculateCreditsForMessage(message);
+    const msgCredits = calculateCreditsForMessage(message, sender);
     if (msgCredits === 0) return res.status(400).json({ ok:false, error:'Message cannot be empty' });
     if (msgCredits < 0) return res.status(400).json({ ok:false, error:'Message too long (max 200 characters)' });
 
@@ -348,17 +345,7 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
         // Log full Mobivate response to see what data they return
         console.log(`📨 Mobivate API Response for ${recipient}:`, JSON.stringify(r.data, null, 2));
         
-        // Check actual cost from Mobivate response and adjust credits if needed
-        const mobivateCost = r.data?.cost || r.data?.price || r.data?.amount || r.data?.charge;
-        let finalCredits = msgCredits;
-        if (mobivateCost && typeof mobivateCost === 'number') {
-          const costBasedCredits = calculateCreditsFromCost(mobivateCost);
-          if (costBasedCredits !== null) {
-            finalCredits = costBasedCredits;
-          }
-        }
-        
-        results.push({ recipient, ok:true, provider: r.data, creditsUsed: finalCredits, costUSD: mobivateCost });
+        results.push({ recipient, ok:true, provider: r.data, creditsUsed: msgCredits });
         success += 1;
       } catch (e) {
         const err = e.response?.data || e.message || 'Upstream error';
@@ -366,16 +353,11 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
       }
     }
 
-    // Calculate actual total credits used based on cost adjustments
-    const actualTotalCredits = results.reduce((sum, result) => {
-      return sum + (result.creditsUsed || msgCredits);
-    }, 0);
+    // Deduct credits based on tier (msgCredits per recipient)
+    const after = writeStore({ credits: store.credits - totalNeeded });
+    appendLog({ type:'batch_send', sender, count: uniqueRecipients.length, success, msgLen: String(message||'').length, msgCredits, totalCreditsUsed: totalNeeded, messagePreview: message.slice(0, 40), creditsAfter: after.credits });
 
-    // Deduct actual credits used
-    const after = writeStore({ credits: store.credits - actualTotalCredits });
-    appendLog({ type:'batch_send', sender, count: uniqueRecipients.length, success, msgLen: String(message||'').length, msgCredits, totalCreditsUsed: actualTotalCredits, messagePreview: message.slice(0, 40), creditsAfter: after.credits });
-
-    return res.json({ ok:true, attempted: uniqueRecipients.length, success, perMessage: msgCredits, totalUsed: actualTotalCredits, credits: after.credits, results });
+    return res.json({ ok:true, attempted: uniqueRecipients.length, success, perMessage: msgCredits, totalUsed: totalNeeded, credits: after.credits, results });
   } catch (e) {
     res.status(500).json({ ok:false, error: e.message || 'Server error' });
   }
@@ -450,6 +432,91 @@ app.get('/api/pricing', requireRoleAuth('admin'), async (req, res) => {
     res.status(502).json({ ok:false, error: e.response?.data || e.message || 'Failed to fetch pricing' });
   }
 });
+
+// Function to get estimated cost from Mobivate pricing API
+async function getEstimatedCost(recipient, message) {
+  try {
+    console.log(`🔍 Fetching pricing for recipient: ${recipient}`);
+    
+    // Try different pricing endpoints and authentication methods
+    const endpoints = [
+      { url: '/apis/sms/mt/v2/pricing', auth: 'Bearer' },
+      { url: '/pricing', auth: 'Bearer' },
+      { url: '/sms/pricing', auth: 'Bearer' },
+      { url: '/api/pricing', auth: 'Bearer' },
+      { url: '/apis/sms/mt/v2/pricing', auth: 'Basic' },
+      { url: '/pricing', auth: 'Basic' }
+    ];
+    
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`📡 Trying endpoint: ${endpoint}`);
+        const r = await axios.get(`${MOBIVATE_BASE_URL}${endpoint}`, {
+          headers: { 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
+          timeout: 5_000
+        });
+        
+        console.log(`📊 Pricing API Response from ${endpoint}:`, JSON.stringify(r.data, null, 2));
+        
+        const pricing = r.data;
+        
+        // Extract country code from recipient (assuming international format)
+        const countryCode = recipient.substring(0, 3);
+        
+        // Try different field names for pricing data
+        const possibleFields = ['networks', 'rates', 'pricing', 'countries', 'destinations'];
+        const possiblePriceFields = ['price', 'cost', 'rate', 'amount', 'charge'];
+        
+        for (const field of possibleFields) {
+          if (pricing[field] && Array.isArray(pricing[field])) {
+            const network = pricing[field].find(n => 
+              n.countryCode === countryCode || 
+              n.country === countryCode || 
+              n.code === countryCode ||
+              n.destination === countryCode
+            );
+            
+            if (network) {
+              for (const priceField of possiblePriceFields) {
+                if (network[priceField]) {
+                  const price = parseFloat(network[priceField]);
+                  console.log(`💰 Found pricing for ${countryCode}: $${price} (field: ${priceField})`);
+                  return price;
+                }
+              }
+            }
+          }
+        }
+        
+        // Try direct pricing fields
+        for (const priceField of possiblePriceFields) {
+          if (pricing[priceField]) {
+            const price = parseFloat(pricing[priceField]);
+            console.log(`💰 Using direct pricing: $${price} (field: ${priceField})`);
+            return price;
+          }
+        }
+        
+        // Try default pricing
+        if (pricing.defaultPrice || pricing.default) {
+          const price = parseFloat(pricing.defaultPrice || pricing.default);
+          console.log(`💰 Using default pricing: $${price}`);
+          return price;
+        }
+        
+      } catch (endpointError) {
+        console.log(`❌ Endpoint ${endpoint} failed:`, endpointError.response?.status || endpointError.message);
+        continue;
+      }
+    }
+    
+    console.log('❌ No pricing found in any endpoint');
+    return null;
+  } catch (e) {
+    console.error('❌ Error getting estimated cost:', e.response?.data || e.message);
+    return null;
+  }
+}
 
 // Admin: get account balance from Mobivate API
 app.get('/api/balance', requireRoleAuth('admin'), async (req, res) => {

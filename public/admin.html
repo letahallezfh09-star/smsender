@@ -20,6 +20,16 @@
     .item{border-bottom:1px dashed #283142;padding:8px 0; font-size:12px}
     .item:last-child{border-bottom:none}
     .type{color:#9fb3c8;margin-right:6px}
+    .table-container{margin-top:14px;background:#0d1117;border:1px solid #283142;border-radius:10px;overflow:auto;max-height:400px}
+    .data-table{width:100%;border-collapse:collapse;font-size:12px}
+    .data-table th{background:#1a1f2a;color:#77bdfb;padding:8px 6px;text-align:left;border-bottom:1px solid #283142;font-weight:600;position:sticky;top:0}
+    .data-table td{padding:6px;border-bottom:1px solid #283142;color:#c7d3e0}
+    .data-table tr:hover{background:#1a1f2a}
+    .status-sent{color:#4ade80}
+    .status-failed{color:#f87171}
+    .status-delivered{color:#4ade80}
+    .status-undeliverable{color:#f87171}
+    .status-pending{color:#fbbf24}
   </style>
 </head>
 <body>
@@ -51,8 +61,46 @@
       </div>
 
       <div>
-        <label>Recent logs</label>
+        <label>Sent Messages</label>
+        <div class="table-container">
+          <table class="data-table" id="messagesTable">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Sender</th>
+                <th>Recipients</th>
+                <th>Message</th>
+                <th>Credits Used</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="messagesBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <label>System Logs</label>
         <div class="list" id="logs"></div>
+      </div>
+
+      <div>
+        <label>Delivery Status</label>
+        <div class="table-container">
+          <table class="data-table" id="deliveriesTable">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Message ID</th>
+                <th>Recipient</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="deliveriesBody">
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -67,6 +115,8 @@
     const dueInput = document.getElementById('due');
     const setDueBtn = document.getElementById('setDue');
     const renewBtn = document.getElementById('renew');
+    const messagesBody = document.getElementById('messagesBody');
+    const deliveriesBody = document.getElementById('deliveriesBody');
 
     let authHeader = '';
     // Login modal UI
@@ -124,7 +174,9 @@
                           : (item.type==='set_due_date' ?
                               `dueDate=${item.dueDate}`
                               : (item.type==='renew_month' ? `old=${item.oldDueDate||'-'} -> new=${item.newDueDate}`
-                                : `creditsAfter=${item.creditsAfter}`
+                                : (item.type==='cost_adjustment' ? `messageId=${item.messageId} originalCredits=${item.originalCredits} costBasedCredits=${item.costBasedCredits} costUSD=${item.costUSD}`
+                                  : `creditsAfter=${item.creditsAfter}`
+                                )
                               )
                             )
                         );
@@ -132,7 +184,55 @@
       });
     }
 
-    refreshEl.addEventListener('click', ()=>{ loadCredits(); loadSubscription(); loadLogs(); });
+    async function loadMessages(){
+      const r = await fetch('/api/logs', { headers: { 'x-auth': authHeader } });
+      const d = await r.json();
+      messagesBody.innerHTML = '';
+      
+      // Filter only batch_send logs and display as table rows
+      (d.logs||[]).filter(item => item.type === 'batch_send').forEach(item=>{
+        const row = document.createElement('tr');
+        const time = new Date(item.time).toLocaleString();
+        const message = (item.messagePreview || '').replace(/</g,'&lt;').substring(0, 50) + (item.messagePreview?.length > 50 ? '...' : '');
+        const status = item.success > 0 ? 'Sent' : 'Failed';
+        const statusClass = item.success > 0 ? 'status-sent' : 'status-failed';
+        
+        row.innerHTML = `
+          <td>${time}</td>
+          <td>${item.sender || '--'}</td>
+          <td>${item.count || 0}</td>
+          <td title="${(item.messagePreview || '').replace(/</g,'&lt;')}">${message}</td>
+          <td>${item.totalCreditsUsed || item.msgCredits || '--'}</td>
+          <td class="${statusClass}">${status}</td>
+        `;
+        messagesBody.appendChild(row);
+      });
+    }
+
+    async function loadDeliveries(){
+      const r = await fetch('/api/deliveries', { headers: { 'x-auth': authHeader } });
+      const d = await r.json();
+      deliveriesBody.innerHTML = '';
+      
+      (d.deliveries||[]).forEach(item=>{
+        const row = document.createElement('tr');
+        const time = new Date(item.time).toLocaleString();
+        const status = item.status || 'Unknown';
+        const statusClass = status.toLowerCase().includes('delivered') ? 'status-delivered' : 
+                           status.toLowerCase().includes('undeliverable') ? 'status-undeliverable' : 
+                           status.toLowerCase().includes('sent') ? 'status-sent' : 'status-pending';
+        
+        row.innerHTML = `
+          <td>${time}</td>
+          <td>${item.messageId || '--'}</td>
+          <td>${item.recipient || '--'}</td>
+          <td class="${statusClass}">${status}</td>
+        `;
+        deliveriesBody.appendChild(row);
+      });
+    }
+
+    refreshEl.addEventListener('click', ()=>{ loadCredits(); loadSubscription(); loadLogs(); loadMessages(); loadDeliveries(); });
     applyEl.addEventListener('click', async ()=>{
       const val = Number(setValEl.value);
       if(!Number.isFinite(val) || val<0) return alert('Please enter a non-negative integer');
@@ -191,7 +291,7 @@
       const r = await fetch('/api/credits', { headers: { 'x-auth': authHeader } });
       if (r.status === 200) {
         loginModal.style.display = 'none';
-        loadCredits(); loadSubscription(); loadLogs();
+        loadCredits(); loadSubscription(); loadLogs(); loadMessages(); loadDeliveries();
       } else {
         authHeader = '';
         loginErr.style.display = 'block';
