@@ -45,13 +45,17 @@ app.use(cors({ origin: ALLOW_ORIGIN }));
 app.set('trust proxy', 1);
 
 // --- Simple JSON storage for credits and logs ---
-const DATA_FILE = path.join(__dirname, 'data.json');
+// Allow overriding storage directory via env (useful for Render persistent disks)
+const DATA_DIR = process.env.STORAGE_DIR || __dirname;
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+const DATA_FILE = path.join(DATA_DIR, 'data.json');
 function readStore() {
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     const data = JSON.parse(raw);
     if (typeof data.credits !== 'number') data.credits = 0;
     if (!Array.isArray(data.logs)) data.logs = [];
+    if (!Array.isArray(data.deliveries)) data.deliveries = [];
     if (data.dueDate && typeof data.dueDate === 'string') {
       // keep as ISO string
     } else if (data.dueDate !== null && data.dueDate !== undefined) {
@@ -59,7 +63,7 @@ function readStore() {
     }
     return data;
   } catch {
-    return { credits: 0, logs: [], dueDate: null };
+    return { credits: 0, logs: [], deliveries: [], dueDate: null };
   }
 }
 function writeStore(update) {
@@ -75,6 +79,16 @@ function appendLog(entry) {
   if (data.logs.length > 1000) data.logs.length = 1000;
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
   return log;
+}
+
+function appendDelivery(entry) {
+  const data = readStore();
+  const delivery = { time: new Date().toISOString(), ...entry };
+  data.deliveries.unshift(delivery);
+  // keep last 2000
+  if (data.deliveries.length > 2000) data.deliveries.length = 2000;
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  return delivery;
 }
 
 function computeIsExpired(store) {
@@ -139,15 +153,42 @@ const normalizeMsisdn = input => {
   return digits;
 };
 
-// Credits: tiered by message length
+// Credits: tiered system
+// Emojis count as 3 characters, Hebrew/Unicode count as 2 characters
 function calculateCreditsForMessage(message) {
-  const length = String(message || '').length;
-  if (length <= 0) return 0;
-  if (length <= 60) return 1;
-  if (length <= 100) return 2;
-  if (length <= 150) return 3;
-  if (length <= 200) return 4;
-  return -1; // over limit
+  const text = String(message || '');
+  if (text.length <= 0) return 0;
+  
+  let weightedLength = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const code = char.charCodeAt(0);
+    
+    // Check if it's an emoji (most emojis are in these ranges)
+    if (code >= 0x1F600 && code <= 0x1F64F || // Emoticons
+        code >= 0x1F300 && code <= 0x1F5FF || // Misc Symbols and Pictographs
+        code >= 0x1F680 && code <= 0x1F6FF || // Transport and Map
+        code >= 0x1F1E0 && code <= 0x1F1FF || // Regional indicators
+        code >= 0x2600 && code <= 0x26FF ||   // Misc symbols
+        code >= 0x2700 && code <= 0x27BF ||   // Dingbats
+        code >= 0xFE00 && code <= 0xFE0F ||   // Variation selectors
+        code >= 0x1F900 && code <= 0x1F9FF || // Supplemental Symbols
+        code >= 0x1F018 && code <= 0x1F0F5) { // Playing cards
+      weightedLength += 3; // Emoji = 3 characters
+    }
+    // Check if it's Hebrew or other Unicode (non-ASCII)
+    else if (code > 127) {
+      weightedLength += 2; // Hebrew/Unicode = 2 characters
+    }
+    // Regular ASCII character
+    else {
+      weightedLength += 1; // ASCII = 1 character
+    }
+  }
+  
+  // Every 25 characters = 1 credit
+  if (weightedLength > 200) return -1; // over limit
+  return Math.ceil(weightedLength / 25); // Every 25 weighted characters = 1 credit
 }
 
 // Health
@@ -324,6 +365,40 @@ app.get('/api/logs', requireRoleAuth('admin'), (req, res) => {
   res.json({ ok:true, logs: store.logs.slice(0, 200) });
 });
 
+// Admin: delivery status history
+app.get('/api/deliveries', requireRoleAuth('admin'), (req, res) => {
+  const store = readStore();
+  res.json({ ok:true, deliveries: store.deliveries.slice(0, 200) });
+});
+
+// Admin: get real pricing from Mobivate API
+app.get('/api/pricing', requireRoleAuth('admin'), async (req, res) => {
+  try {
+    const r = await axios.get(`${MOBIVATE_BASE_URL}/apis/sms/mt/v2/pricing`, {
+      headers: { 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
+      timeout: 10_000
+    });
+    res.json({ ok:true, pricing: r.data });
+  } catch (e) {
+    console.error('Error fetching pricing:', e.response?.data || e.message);
+    res.status(502).json({ ok:false, error: e.response?.data || e.message || 'Failed to fetch pricing' });
+  }
+});
+
+// Admin: get account balance from Mobivate API
+app.get('/api/balance', requireRoleAuth('admin'), async (req, res) => {
+  try {
+    const r = await axios.get(`${MOBIVATE_BASE_URL}/apis/sms/mt/v2/balance`, {
+      headers: { 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
+      timeout: 10_000
+    });
+    res.json({ ok:true, balance: r.data });
+  } catch (e) {
+    console.error('Error fetching balance:', e.response?.data || e.message);
+    res.status(502).json({ ok:false, error: e.response?.data || e.message || 'Failed to fetch balance' });
+  }
+});
+
 // --- Due date helpers ---
 function parseDateInput(val) {
   if (!val) return null;
@@ -369,6 +444,32 @@ app.post('/api/due-date/renew-month', requireRoleAuth('admin'), (req, res) => {
 // Webhook endpoints for Mobivate notifications
 app.post('/api/sms/receipt', express.json({ type:'*/*' }), (req, res) => {
   console.log('📨 Delivery Receipt received:', JSON.stringify(req.body, null, 2));
+  try {
+    const { messageId, status, recipient, timestamp } = req.body || {};
+    if (messageId && status && recipient) {
+      appendDelivery({
+        type: 'delivery_receipt',
+        messageId,
+        status: String(status).toUpperCase(),
+        recipient: String(recipient),
+        timestamp: timestamp || new Date().toISOString()
+      });
+      // Also update the original send log if we can match by recipient
+      const store = readStore();
+      const matchingLog = store.logs.find(log => 
+        log.type === 'batch_send' && 
+        log.time && 
+        new Date(log.time) > new Date(Date.now() - 24*60*60*1000) // within last 24h
+      );
+      if (matchingLog) {
+        matchingLog.deliveryStatus = String(status).toUpperCase();
+        matchingLog.deliveryTime = new Date().toISOString();
+        fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2));
+      }
+    }
+  } catch (e) {
+    console.error('Error processing delivery receipt:', e);
+  }
   res.sendStatus(200);
 });
 
