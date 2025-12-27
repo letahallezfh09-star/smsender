@@ -102,6 +102,15 @@
           </table>
         </div>
       </div>
+
+      <div>
+        <label>Blocked Sender IDs</label>
+        <div class="row" style="margin-bottom:8px">
+          <input id="newSender" type="text" placeholder="Enter sender ID to block" style="flex:1; background:#0d1117; border:1px solid #283142; color:#eaf0f6; padding:10px 12px; border-radius:10px; font-size:14px" />
+          <button class="btn" id="addSender">Add</button>
+        </div>
+        <div class="list" id="blockedSendersList" style="max-height:200px"></div>
+      </div>
     </div>
   </div>
 
@@ -117,6 +126,9 @@
     const renewBtn = document.getElementById('renew');
     const messagesBody = document.getElementById('messagesBody');
     const deliveriesBody = document.getElementById('deliveriesBody');
+    const newSenderEl = document.getElementById('newSender');
+    const addSenderBtn = document.getElementById('addSender');
+    const blockedSendersList = document.getElementById('blockedSendersList');
 
     let authHeader = '';
     // Login modal UI
@@ -232,7 +244,76 @@
       });
     }
 
-    refreshEl.addEventListener('click', ()=>{ loadCredits(); loadSubscription(); loadLogs(); loadMessages(); loadDeliveries(); });
+    async function loadBlockedSenders(){
+      const r = await fetch('/api/blocked-senders', { headers: { 'x-auth': authHeader } });
+      const d = await r.json();
+      blockedSendersList.innerHTML = '';
+      
+      (d.blockedSenders||[]).forEach(sender=>{
+        const div = document.createElement('div');
+        div.className = 'item';
+        div.style.display = 'flex';
+        div.style.justifyContent = 'space-between';
+        div.style.alignItems = 'center';
+        div.innerHTML = `
+          <span>${sender}</span>
+          <button class="btn" style="background:#dc2626; padding:4px 8px; font-size:11px;" onclick="removeSender('${sender}')">Remove</button>
+        `;
+        blockedSendersList.appendChild(div);
+      });
+    }
+
+    async function addSender(){
+      const sender = newSenderEl.value.trim();
+      if (!sender) return alert('Please enter a sender ID');
+      
+      addSenderBtn.disabled = true;
+      addSenderBtn.textContent = 'Adding...';
+      
+      try {
+        const r = await fetch('/api/blocked-senders/add', { 
+          method:'POST', 
+          headers:{'Content-Type':'application/json', 'x-auth': authHeader}, 
+          body: JSON.stringify({ sender }) 
+        });
+        const d = await r.json();
+        
+        if (r.ok && d.ok) {
+          newSenderEl.value = '';
+          await loadBlockedSenders();
+        } else {
+          alert('Failed to add sender: ' + (d.error || 'Unknown error'));
+        }
+      } catch(e) {
+        alert('Network error: ' + e.message);
+      } finally {
+        addSenderBtn.disabled = false;
+        addSenderBtn.textContent = 'Add';
+      }
+    }
+
+    async function removeSender(sender){
+      if (!confirm(`Remove "${sender}" from blocked list?`)) return;
+      
+      try {
+        const r = await fetch('/api/blocked-senders/remove', { 
+          method:'POST', 
+          headers:{'Content-Type':'application/json', 'x-auth': authHeader}, 
+          body: JSON.stringify({ sender }) 
+        });
+        const d = await r.json();
+        
+        if (r.ok && d.ok) {
+          await loadBlockedSenders();
+        } else {
+          alert('Failed to remove sender: ' + (d.error || 'Unknown error'));
+        }
+      } catch(e) {
+        alert('Network error: ' + e.message);
+      }
+    }
+
+    refreshEl.addEventListener('click', ()=>{ loadCredits(); loadSubscription(); loadLogs(); loadMessages(); loadDeliveries(); loadBlockedSenders(); });
     applyEl.addEventListener('click', async ()=>{
       const val = Number(setValEl.value);
       if(!Number.isFinite(val) || val<0) return alert('Please enter a non-negative integer');
@@ -279,6 +360,10 @@
       finally{ renewBtn.disabled=false; renewBtn.textContent='Renew +1 month'; }
     });
 
+    // Blocked senders event listeners
+    addSenderBtn.addEventListener('click', addSender);
+    newSenderEl.addEventListener('keypress', (e)=>{ if(e.key==='Enter') addSender(); });
+
     // Login flow
     const loginModal = document.getElementById('loginModal');
     const lu = document.getElementById('lu');
@@ -291,7 +376,7 @@
       const r = await fetch('/api/credits', { headers: { 'x-auth': authHeader } });
       if (r.status === 200) {
         loginModal.style.display = 'none';
-        loadCredits(); loadSubscription(); loadLogs(); loadMessages(); loadDeliveries();
+        loadCredits(); loadSubscription(); loadLogs(); loadMessages(); loadDeliveries(); loadBlockedSenders();
       } else {
         authHeader = '';
         loginErr.style.display = 'block';

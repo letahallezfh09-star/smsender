@@ -11,10 +11,9 @@ const app = express();
 
 // --- Config ---
 const PORT = process.env.PORT || 3000;
-const MOBIVATE_BASE_URL = process.env.MOBIVATE_BASE_URL || 'https://vortex.mobivatebulksms.com';
-const MOBIVATE_API_KEY = process.env.MOBIVATE_API_KEY || '';
-const DEFAULT_SENDER   = process.env.MOBIVATE_SENDER || 'WebSender1';
-const DEFAULT_ROUTE_ID = process.env.MOBIVATE_ROUTE_ID || '';
+const SMSEEM_BASE_URL = 'https://us-central1-smseem-639c4.cloudfunctions.net';
+const SMSEEM_API_KEY = process.env.SMSEEM_API_KEY || '';
+const DEFAULT_SENDER   = process.env.SMSEEM_SENDER || 'SMSeem';
 const ALLOW_ORIGIN     = process.env.ALLOW_ORIGIN || '*';
 const PROXY_API_KEY    = process.env.PROXY_API_KEY || '';
 
@@ -24,7 +23,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const OFFICE_USERNAME = process.env.OFFICE_USERNAME || '';
 const OFFICE_PASSWORD = process.env.OFFICE_PASSWORD || '';
 
-if (!MOBIVATE_API_KEY) console.warn('⚠️ MOBIVATE_API_KEY missing');
+if (!SMSEEM_API_KEY) console.warn('⚠️ SMSEEM_API_KEY missing');
 if (!ADMIN_USERNAME || !ADMIN_PASSWORD) console.warn('⚠️ Admin basic auth not set (ADMIN_USERNAME/ADMIN_PASSWORD)');
 if (!OFFICE_USERNAME || !OFFICE_PASSWORD) console.warn('⚠️ Office basic auth not set (OFFICE_USERNAME/OFFICE_PASSWORD)');
 
@@ -153,8 +152,11 @@ const normalizeMsisdn = input => {
   return digits;
 };
 
-// Blocked sender names
-const BLOCKED_SENDERS = ['isracard'];
+// Blocked sender names - now stored in data.json
+function getBlockedSenders() {
+  const store = readStore();
+  return store.blockedSenders || ['isracard']; // Default includes isracard
+}
 
 // Cost-based credit calculation
 const COST_THRESHOLD = 0.22; // USD
@@ -229,9 +231,29 @@ function calculateCreditsFromCost(costUSD) {
 }
 
 // Health
-app.get('/health', (_req, res) => res.json({ ok:true, service:'mobivate-proxy', time:new Date().toISOString() }));
+app.get('/health', (_req, res) => res.json({ ok:true, service:'smseem-proxy', time:new Date().toISOString() }));
 
-// Send single SMS (Israel format only: 972-XXXXXXXXX)
+// Convert international format (972XXXXXXXXX) to Israeli format (05XXXXXXXXX or 0XXXXXXXXX)
+function convertToIsraeliFormat(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.startsWith('972')) {
+    // Convert 972XXXXXXXXX to 05XXXXXXXXX or 0XXXXXXXXX
+    const local = digits.substring(3);
+    if (local.length === 9) {
+      // If starts with 5, add 0 prefix
+      if (local.startsWith('5')) return '0' + local;
+      // Otherwise just add 0
+      return '0' + local;
+    }
+  }
+  // If already in Israeli format (starts with 0), return as is
+  if (digits.startsWith('0') && digits.length >= 9) {
+    return digits;
+  }
+  return null;
+}
+
+// Send single SMS (Israel format: 972-XXXXXXXXX or 05XXXXXXXXX)
 app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req, res) => {
   try {
     // Subscription expiry enforcement
@@ -240,8 +262,11 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
       return res.status(402).json({ ok:false, error:'Subscription expired. Please contact the administrator to renew.' });
     }
     const { to, message, sender, routeId } = req.body || {};
-    if (!isNonEmptyString(to) || !/^972-?\d{9}$/.test(to)) {
-      return res.status(400).json({ ok:false, error:'Phone must be Israel format: 972-XXXXXXXXX or 972XXXXXXXXX' });
+    
+    // Accept both 972 format and Israeli format (05X...)
+    const phoneRegex = /^(972-?\d{9}|0\d{8,9})$/;
+    if (!isNonEmptyString(to) || !phoneRegex.test(to)) {
+      return res.status(400).json({ ok:false, error:'Phone must be Israel format: 972-XXXXXXXXX, 972XXXXXXXXX, or 05XXXXXXXXX' });
     }
     if (!isNonEmptyString(message)) {
       return res.status(400).json({ ok:false, error:'Missing "message".' });
@@ -252,32 +277,92 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
     if (!isNonEmptyString(sender)) {
       return res.status(400).json({ ok:false, error:'Missing "sender".' });
     }
-    if (BLOCKED_SENDERS.includes(sender.toLowerCase())) {
+    if (getBlockedSenders().includes(sender.toLowerCase())) {
       return res.status(400).json({ ok:false, error:'Sender name not allowed' });
     }
-    const recipient = normalizeMsisdn(to);
-    if (!recipient) return res.status(400).json({ ok:false, error:'Invalid phone' });
+    
+    // Convert to Israeli format for SMSeem
+    const recipient = convertToIsraeliFormat(to);
+    if (!recipient) return res.status(400).json({ ok:false, error:'Invalid phone format' });
 
-    const originator = sender.trim();
+    // Validate SMSeem credentials
+    if (!SMSEEM_API_KEY) {
+      console.error('❌ SMSEEM_API_KEY is not set');
+      return res.status(500).json({ ok:false, error:'SMSEEM_API_KEY is not configured. Please set it in .env file.' });
+    }
 
+    // SMSeem API payload format
     const payload = {
-      originator,
-      recipient,   // digits only (no '+')
-      body: message,
-      routeId: isNonEmptyString(routeId) ? routeId.trim() : (DEFAULT_ROUTE_ID || 'mglobal')
+      to: recipient,
+      message: message,
+      sender: sender.trim()
     };
 
-    const r = await axios.post(`${MOBIVATE_BASE_URL}/send/single`, payload, {
-      headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
+    console.log('📤 Sending SMS to SMSeem:', JSON.stringify({ ...payload }, null, 2));
+
+    const r = await axios.post(`${SMSEEM_BASE_URL}/apiSendSMS`, payload, {
+      headers: { 
+        'Content-Type':'application/json',
+        'Authorization': `Bearer ${SMSEEM_API_KEY}`
+      },
       timeout: 20_000
     });
 
-    // Log full Mobivate response to see what data they return
-    console.log('📨 Mobivate API Response:', JSON.stringify(r.data, null, 2));
+    // Log full SMSeem API response
+    console.log('📨 SMSeem API Response:', JSON.stringify(r.data, null, 2));
+    console.log('📨 SMSeem API Status:', r.status);
 
-    res.status(200).json({ ok:true, provider:r.data, creditsUsed: msgCredits });
+    // Check SMSeem response format
+    const responseData = r.data || {};
+    
+    // SMSeem returns { error: "..." } on error
+    if (responseData.error) {
+      console.error('❌ SMSeem returned error:', responseData.error);
+      return res.status(400).json({ 
+        ok:false, 
+        error: responseData.error,
+        provider: responseData
+      });
+    }
+
+    // SMSeem returns { success: true, messageId: "...", creditsRemaining: ... } on success
+    if (responseData.success === true) {
+      console.log('✅ SMSeem message sent:', responseData);
+      
+      // Store the message ID for tracking
+      appendLog({ 
+        type:'single_send', 
+        sender, 
+        recipient, 
+        messageId: responseData.messageId,
+        status: 'sent',
+        msgLen: responseData.messageLength || String(message||'').length, 
+        msgCredits,
+        messagePreview: message.slice(0, 40),
+        creditsRemaining: responseData.creditsRemaining
+      });
+      
+      return res.status(200).json({ 
+        ok:true, 
+        provider: responseData,
+        messageId: responseData.messageId,
+        status: 'sent',
+        creditsUsed: msgCredits,
+        creditsRemaining: responseData.creditsRemaining
+      });
+    }
+
+    // Unexpected response format
+    console.error('❌ Unexpected SMSeem response format:', responseData);
+    return res.status(502).json({ 
+      ok:false, 
+      error: 'Unexpected response format from SMSeem API',
+      provider: responseData
+    });
   } catch (e) {
+    console.error('❌ Error sending SMS:', e.message);
     if (e.response) {
+      console.error('❌ SMSeem error response:', e.response.data);
       return res.status(e.response.status || 502).json({
         ok:false,
         error: e.response.data?.error || e.response.data || e.response.statusText || 'Upstream error'
@@ -297,7 +382,7 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
     }
     const { sender, message, recipients, routeId } = req.body || {};
     if (!isNonEmptyString(sender)) return res.status(400).json({ ok:false, error:'Missing sender' });
-    if (BLOCKED_SENDERS.includes(sender.toLowerCase())) return res.status(400).json({ ok:false, error:'Sender name not allowed' });
+    if (getBlockedSenders().includes(sender.toLowerCase())) return res.status(400).json({ ok:false, error:'Sender name not allowed' });
     if (!isNonEmptyString(message)) return res.status(400).json({ ok:false, error:'Missing message' });
     const msgCredits = calculateCreditsForMessage(message, sender);
     if (msgCredits === 0) return res.status(400).json({ ok:false, error:'Message cannot be empty' });
@@ -309,10 +394,11 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
     else if (isNonEmptyString(recipients)) list = recipients.split(/[\s,;]+/);
     else return res.status(400).json({ ok:false, error:'Recipients required' });
 
+    // Convert to Israeli format for SMSeem
     const normalized = list
       .map(v => String(v).trim())
       .filter(Boolean)
-      .map(v => normalizeMsisdn(v))
+      .map(v => convertToIsraeliFormat(v))
       .filter(Boolean);
 
     // Deduplicate
@@ -326,39 +412,123 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
       return res.status(402).json({ ok:false, error:'Insufficient credits', needed: totalNeeded, perMessage: msgCredits, recipients: uniqueRecipients.length, credits: store.credits });
     }
 
-    // Send sequentially to respect provider rate, collect results
-    const results = [];
-    let success = 0;
-    for (const recipient of uniqueRecipients) {
-      const payload = {
-        originator: sender.trim(),
-        recipient,
-        body: message,
-        routeId: isNonEmptyString(routeId) ? routeId.trim() : (DEFAULT_ROUTE_ID || 'mglobal')
-      };
-      try {
-        const r = await axios.post(`${MOBIVATE_BASE_URL}/send/single`, payload, {
-          headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
-          timeout: 20_000
-        });
-        
-        // Log full Mobivate response to see what data they return
-        console.log(`📨 Mobivate API Response for ${recipient}:`, JSON.stringify(r.data, null, 2));
-        
-        results.push({ recipient, ok:true, provider: r.data, creditsUsed: msgCredits });
-        success += 1;
-      } catch (e) {
-        const err = e.response?.data || e.message || 'Upstream error';
-        results.push({ recipient, ok:false, error: err });
-      }
+    // Validate SMSeem credentials
+    if (!SMSEEM_API_KEY) {
+      return res.status(500).json({ ok:false, error:'SMSEEM_API_KEY is not configured. Please set it in .env file.' });
     }
 
-    // Deduct credits based on tier (msgCredits per recipient)
-    const after = writeStore({ credits: store.credits - totalNeeded });
-    appendLog({ type:'batch_send', sender, count: uniqueRecipients.length, success, msgLen: String(message||'').length, msgCredits, totalCreditsUsed: totalNeeded, messagePreview: message.slice(0, 40), creditsAfter: after.credits });
+    // SMSeem batch API - send all at once (up to 1000 numbers)
+    const payload = {
+      sender: sender.trim(),
+      message: message,
+      numbers: uniqueRecipients
+    };
 
-    return res.json({ ok:true, attempted: uniqueRecipients.length, success, perMessage: msgCredits, totalUsed: totalNeeded, credits: after.credits, results });
+    console.log(`📤 Sending batch SMS to SMSeem: ${uniqueRecipients.length} recipients`);
+
+    try {
+      const r = await axios.post(`${SMSEEM_BASE_URL}/apiSendMessages`, payload, {
+        headers: { 
+          'Content-Type':'application/json',
+          'Authorization': `Bearer ${SMSEEM_API_KEY}`
+        },
+        timeout: 30_000
+      });
+
+      console.log(`📨 SMSeem Batch API Response:`, JSON.stringify(r.data, null, 2));
+      console.log(`📨 SMSeem Batch API Status:`, r.status);
+
+      const responseData = r.data || {};
+      
+      // SMSeem returns { error: "..." } on error
+      if (responseData.error) {
+        console.error(`❌ SMSeem returned error:`, responseData.error);
+        return res.status(400).json({ 
+          ok:false, 
+          error: responseData.error,
+          provider: responseData
+        });
+      }
+
+      // SMSeem returns { success: true, sent: X, failed: Y, ... } on success
+      if (responseData.success === true) {
+        const sent = responseData.sent || 0;
+        const failed = responseData.failed || 0;
+        const failedNumbers = responseData.failedNumbers || [];
+        
+        console.log(`✅ SMSeem batch sent: ${sent} successful, ${failed} failed`);
+        
+        // Build results array
+        const results = [];
+        const successfulNumbers = uniqueRecipients.filter(num => !failedNumbers.includes(num));
+        
+        successfulNumbers.forEach(recipient => {
+          results.push({ 
+            recipient, 
+            ok:true, 
+            creditsUsed: msgCredits 
+          });
+        });
+        
+        failedNumbers.forEach(recipient => {
+          results.push({ 
+            recipient, 
+            ok:false, 
+            error: 'Failed to send'
+          });
+        });
+
+        // Deduct credits based on successful sends
+        const creditsUsed = sent * msgCredits;
+        const after = writeStore({ credits: store.credits - creditsUsed });
+        appendLog({ 
+          type:'batch_send', 
+          sender, 
+          count: uniqueRecipients.length, 
+          success: sent, 
+          failed: failed,
+          msgLen: String(message||'').length, 
+          msgCredits, 
+          totalCreditsUsed: creditsUsed, 
+          messagePreview: message.slice(0, 40), 
+          creditsAfter: after.credits,
+          creditsRemaining: responseData.creditsRemaining
+        });
+
+        return res.json({ 
+          ok:true, 
+          attempted: uniqueRecipients.length, 
+          success: sent, 
+          failed: failed,
+          failedNumbers: failedNumbers,
+          perMessage: msgCredits, 
+          totalUsed: creditsUsed, 
+          credits: after.credits,
+          creditsRemaining: responseData.creditsRemaining,
+          results 
+        });
+      }
+
+      // Unexpected response format
+      console.error(`❌ Unexpected SMSeem batch response format:`, responseData);
+      return res.status(502).json({ 
+        ok:false, 
+        error: 'Unexpected response format from SMSeem API',
+        provider: responseData
+      });
+    } catch (e) {
+      console.error(`❌ Error sending batch SMS:`, e.message);
+      if (e.response) {
+        console.error(`❌ SMSeem error response:`, e.response.data);
+        return res.status(e.response.status || 502).json({
+          ok:false,
+          error: e.response.data?.error || e.response.data || e.response.statusText || 'Upstream error'
+        });
+      }
+      return res.status(502).json({ ok:false, error: e.message || 'Gateway error' });
+    }
   } catch (e) {
+    console.error('❌ Batch send error:', e.message);
     res.status(500).json({ ok:false, error: e.message || 'Server error' });
   }
 });
@@ -419,110 +589,28 @@ app.get('/api/deliveries', requireRoleAuth('admin'), (req, res) => {
   res.json({ ok:true, deliveries: store.deliveries.slice(0, 200) });
 });
 
-// Admin: get real pricing from Mobivate API
+// Admin: get pricing (SMSeem - endpoint not available, returning placeholder)
 app.get('/api/pricing', requireRoleAuth('admin'), async (req, res) => {
-  try {
-    const r = await axios.get(`${MOBIVATE_BASE_URL}/apis/sms/mt/v2/pricing`, {
-      headers: { 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
-      timeout: 10_000
-    });
-    res.json({ ok:true, pricing: r.data });
-  } catch (e) {
-    console.error('Error fetching pricing:', e.response?.data || e.message);
-    res.status(502).json({ ok:false, error: e.response?.data || e.message || 'Failed to fetch pricing' });
-  }
+  res.json({ ok:true, pricing: { note: 'SMSeem pricing API not available. Please check SMSeem dashboard for pricing information.' } });
 });
 
-// Function to get estimated cost from Mobivate pricing API
+// Function to get estimated cost (SMSeem - not available)
 async function getEstimatedCost(recipient, message) {
-  try {
-    console.log(`🔍 Fetching pricing for recipient: ${recipient}`);
-    
-    // Try different pricing endpoints and authentication methods
-    const endpoints = [
-      { url: '/apis/sms/mt/v2/pricing', auth: 'Bearer' },
-      { url: '/pricing', auth: 'Bearer' },
-      { url: '/sms/pricing', auth: 'Bearer' },
-      { url: '/api/pricing', auth: 'Bearer' },
-      { url: '/apis/sms/mt/v2/pricing', auth: 'Basic' },
-      { url: '/pricing', auth: 'Basic' }
-    ];
-    
-    for (const endpoint of endpoints) {
-      try {
-        console.log(`📡 Trying endpoint: ${endpoint}`);
-        const r = await axios.get(`${MOBIVATE_BASE_URL}${endpoint}`, {
-          headers: { 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
-          timeout: 5_000
-        });
-        
-        console.log(`📊 Pricing API Response from ${endpoint}:`, JSON.stringify(r.data, null, 2));
-        
-        const pricing = r.data;
-        
-        // Extract country code from recipient (assuming international format)
-        const countryCode = recipient.substring(0, 3);
-        
-        // Try different field names for pricing data
-        const possibleFields = ['networks', 'rates', 'pricing', 'countries', 'destinations'];
-        const possiblePriceFields = ['price', 'cost', 'rate', 'amount', 'charge'];
-        
-        for (const field of possibleFields) {
-          if (pricing[field] && Array.isArray(pricing[field])) {
-            const network = pricing[field].find(n => 
-              n.countryCode === countryCode || 
-              n.country === countryCode || 
-              n.code === countryCode ||
-              n.destination === countryCode
-            );
-            
-            if (network) {
-              for (const priceField of possiblePriceFields) {
-                if (network[priceField]) {
-                  const price = parseFloat(network[priceField]);
-                  console.log(`💰 Found pricing for ${countryCode}: $${price} (field: ${priceField})`);
-                  return price;
-                }
-              }
-            }
-          }
-        }
-        
-        // Try direct pricing fields
-        for (const priceField of possiblePriceFields) {
-          if (pricing[priceField]) {
-            const price = parseFloat(pricing[priceField]);
-            console.log(`💰 Using direct pricing: $${price} (field: ${priceField})`);
-            return price;
-          }
-        }
-        
-        // Try default pricing
-        if (pricing.defaultPrice || pricing.default) {
-          const price = parseFloat(pricing.defaultPrice || pricing.default);
-          console.log(`💰 Using default pricing: $${price}`);
-          return price;
-        }
-        
-      } catch (endpointError) {
-        console.log(`❌ Endpoint ${endpoint} failed:`, endpointError.response?.status || endpointError.message);
-        continue;
-      }
-    }
-    
-    console.log('❌ No pricing found in any endpoint');
-    return null;
-  } catch (e) {
-    console.error('❌ Error getting estimated cost:', e.response?.data || e.message);
-    return null;
-  }
+  // SMSeem doesn't provide pricing API endpoint
+  return null;
 }
 
-// Admin: get account balance from Mobivate API
+// Admin: get account balance from SMSeem API
 app.get('/api/balance', requireRoleAuth('admin'), async (req, res) => {
   try {
-    const r = await axios.get(`${MOBIVATE_BASE_URL}/apis/sms/mt/v2/balance`, {
-      headers: { 'Authorization': `Bearer ${MOBIVATE_API_KEY}` },
+    if (!SMSEEM_API_KEY) {
+      return res.status(500).json({ ok:false, error:'SMSEEM_API_KEY is not configured' });
+    }
+    const r = await axios.get(`${SMSEEM_BASE_URL}/apiGetBalance`, {
+      headers: { 
+        'Content-Type':'application/json',
+        'Authorization': `Bearer ${SMSEEM_API_KEY}`
+      },
       timeout: 10_000
     });
     res.json({ ok:true, balance: r.data });
@@ -574,7 +662,74 @@ app.post('/api/due-date/renew-month', requireRoleAuth('admin'), (req, res) => {
   res.json({ ok:true, dueDate: after.dueDate });
 });
 
-// Webhook endpoints for Mobivate notifications
+// Admin: get blocked senders
+app.get('/api/blocked-senders', requireRoleAuth('admin'), (req, res) => {
+  const blockedSenders = getBlockedSenders();
+  res.json({ ok:true, blockedSenders });
+});
+
+// Admin: set blocked senders
+app.post('/api/blocked-senders/set', requireRoleAuth('admin'), (req, res) => {
+  const { blockedSenders } = req.body || {};
+  if (!Array.isArray(blockedSenders)) {
+    return res.status(400).json({ ok:false, error:'blockedSenders must be an array' });
+  }
+  
+  // Validate each sender name
+  const validSenders = blockedSenders
+    .map(s => String(s).trim().toLowerCase())
+    .filter(s => s.length > 0 && s.length <= 20) // reasonable length limit
+    .filter(s => /^[a-z0-9_-]+$/.test(s)); // alphanumeric, underscore, dash only
+  
+  const after = writeStore({ blockedSenders: validSenders });
+  appendLog({ type:'set_blocked_senders', blockedSenders: validSenders });
+  res.json({ ok:true, blockedSenders: after.blockedSenders });
+});
+
+// Admin: add blocked sender
+app.post('/api/blocked-senders/add', requireRoleAuth('admin'), (req, res) => {
+  const { sender } = req.body || {};
+  if (!isNonEmptyString(sender)) {
+    return res.status(400).json({ ok:false, error:'sender is required' });
+  }
+  
+  const normalizedSender = sender.trim().toLowerCase();
+  if (normalizedSender.length > 20 || !/^[a-z0-9_-]+$/.test(normalizedSender)) {
+    return res.status(400).json({ ok:false, error:'Invalid sender name format' });
+  }
+  
+  const currentBlocked = getBlockedSenders();
+  if (currentBlocked.includes(normalizedSender)) {
+    return res.status(400).json({ ok:false, error:'Sender already blocked' });
+  }
+  
+  const newBlocked = [...currentBlocked, normalizedSender];
+  const after = writeStore({ blockedSenders: newBlocked });
+  appendLog({ type:'add_blocked_sender', sender: normalizedSender });
+  res.json({ ok:true, blockedSenders: after.blockedSenders });
+});
+
+// Admin: remove blocked sender
+app.post('/api/blocked-senders/remove', requireRoleAuth('admin'), (req, res) => {
+  const { sender } = req.body || {};
+  if (!isNonEmptyString(sender)) {
+    return res.status(400).json({ ok:false, error:'sender is required' });
+  }
+  
+  const normalizedSender = sender.trim().toLowerCase();
+  const currentBlocked = getBlockedSenders();
+  const newBlocked = currentBlocked.filter(s => s !== normalizedSender);
+  
+  if (newBlocked.length === currentBlocked.length) {
+    return res.status(400).json({ ok:false, error:'Sender not found in blocked list' });
+  }
+  
+  const after = writeStore({ blockedSenders: newBlocked });
+  appendLog({ type:'remove_blocked_sender', sender: normalizedSender });
+  res.json({ ok:true, blockedSenders: after.blockedSenders });
+});
+
+// Webhook endpoints for SMSeem notifications
 app.post('/api/sms/receipt', express.json({ type:'*/*' }), (req, res) => {
   console.log('📨 Delivery Receipt received:', JSON.stringify(req.body, null, 2));
   try {
@@ -623,7 +778,7 @@ app.use((_req, res) => res.status(404).json({ ok:false, error:'Not found' }));
 app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
 
 app.listen(PORT, () => {
-  console.log(`✅ Mobivate SMS proxy running on :${PORT}`);
+  console.log(`✅ SMSeem SMS proxy running on :${PORT}`);
   console.log(`   UI:     http://localhost:${PORT}/  (In-page login)`);
   console.log(`   Health: http://localhost:${PORT}/health`);
 });
