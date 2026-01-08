@@ -23,9 +23,28 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const OFFICE_USERNAME = process.env.OFFICE_USERNAME || '';
 const OFFICE_PASSWORD = process.env.OFFICE_PASSWORD || '';
 
+// Log configuration status on startup
+console.log('🔧 Configuration check:');
 if (!SMSEEM_API_KEY) console.warn('⚠️ SMSEEM_API_KEY missing');
-if (!ADMIN_USERNAME || !ADMIN_PASSWORD) console.warn('⚠️ Admin basic auth not set (ADMIN_USERNAME/ADMIN_PASSWORD)');
-if (!OFFICE_USERNAME || !OFFICE_PASSWORD) console.warn('⚠️ Office basic auth not set (OFFICE_USERNAME/OFFICE_PASSWORD)');
+else console.log('✅ SMSEEM_API_KEY is set');
+
+if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+  console.warn('⚠️ Admin basic auth not set (ADMIN_USERNAME/ADMIN_PASSWORD)');
+} else {
+  console.log(`✅ Admin auth configured (username: ${ADMIN_USERNAME})`);
+}
+
+if (!OFFICE_USERNAME || !OFFICE_PASSWORD) {
+  console.warn('⚠️ Office basic auth not set (OFFICE_USERNAME/OFFICE_PASSWORD)');
+} else {
+  console.log(`✅ Office auth configured (username: ${OFFICE_USERNAME})`);
+}
+
+if (!PROXY_API_KEY || PROXY_API_KEY.trim() === '') {
+  console.log('ℹ️ PROXY_API_KEY not set - API key check disabled');
+} else {
+  console.log('✅ PROXY_API_KEY is set - API key check enabled');
+}
 
 // --- Middleware ---
 app.use(helmet({
@@ -104,17 +123,53 @@ function computeIsExpired(store) {
 // Expect header: x-auth: Basic base64(user:pass)
 function requireRoleAuth(role) {
   return function(req, res, next) {
-    const hdr = req.headers['x-auth'] || '';
+    const hdr = req.headers['x-auth'] || req.headers['X-Auth'] || '';
+    
+    // Log authentication attempt for debugging
+    console.log(`🔐 Auth attempt for role: ${role}, header present: ${!!hdr}`);
+    
+    if (!hdr) {
+      console.log('❌ No x-auth header provided');
+      return res.status(401).json({ ok:false, error:'Unauthorized: No credentials provided' });
+    }
+    
     const [scheme, b64] = String(hdr).split(' ');
-    if (scheme === 'Basic' && b64) {
+    if (scheme !== 'Basic' || !b64) {
+      console.log('❌ Invalid auth scheme or missing base64');
+      return res.status(401).json({ ok:false, error:'Unauthorized: Invalid credentials format' });
+    }
+    
+    try {
       const creds = Buffer.from(b64, 'base64').toString();
       const i = creds.indexOf(':');
+      if (i === -1) {
+        console.log('❌ Invalid credentials format (no colon)');
+        return res.status(401).json({ ok:false, error:'Unauthorized: Invalid credentials format' });
+      }
+      
       const user = creds.slice(0, i);
       const pass = creds.slice(i + 1);
-      if (role === 'admin' && user === ADMIN_USERNAME && pass === ADMIN_PASSWORD) return next();
-      if (role === 'office' && user === OFFICE_USERNAME && pass === OFFICE_PASSWORD) return next();
+      
+      // Check credentials
+      if (role === 'admin') {
+        if (user === ADMIN_USERNAME && pass === ADMIN_PASSWORD) {
+          console.log('✅ Admin authentication successful');
+          return next();
+        }
+        console.log(`❌ Admin auth failed: user="${user}", expected="${ADMIN_USERNAME}", passMatch=${pass === ADMIN_PASSWORD}`);
+      } else if (role === 'office') {
+        if (user === OFFICE_USERNAME && pass === OFFICE_PASSWORD) {
+          console.log('✅ Office authentication successful');
+          return next();
+        }
+        console.log(`❌ Office auth failed: user="${user}", expected="${OFFICE_USERNAME}", passMatch=${pass === OFFICE_PASSWORD}`);
+      }
+      
+      return res.status(401).json({ ok:false, error:'Unauthorized: Invalid username or password' });
+    } catch (e) {
+      console.error('❌ Error parsing credentials:', e.message);
+      return res.status(401).json({ ok:false, error:'Unauthorized: Error parsing credentials' });
     }
-    return res.status(401).json({ ok:false, error:'Unauthorized' });
   }
 }
 
@@ -137,12 +192,22 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/sms', apiLimiter);
 
-// Optional API key for programmatic access
+// Optional API key for programmatic access (only if PROXY_API_KEY is set)
+// If not set, this middleware allows all requests through
 function requireProxyKey(req, res, next) {
-  if (!PROXY_API_KEY) return next();
-  const key = req.header('x-api-key');
-  if (key !== PROXY_API_KEY) return res.status(401).json({ ok:false, error:'Unauthorized' });
-  next();
+  // If PROXY_API_KEY is not configured, skip this check
+  if (!PROXY_API_KEY || PROXY_API_KEY.trim() === '') {
+    return next();
+  }
+  
+  // If PROXY_API_KEY is set, require it in the request
+  const key = req.header('x-api-key') || req.header('X-Api-Key');
+  if (key === PROXY_API_KEY) {
+    return next();
+  }
+  
+  console.log('❌ Proxy API key mismatch or missing');
+  return res.status(401).json({ ok:false, error:'Unauthorized: Invalid or missing API key' });
 }
 
 // Helpers
