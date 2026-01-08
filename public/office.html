@@ -232,7 +232,14 @@
         if(r.ok && data.ok){
           setResp(`Success: ${data.success}/${data.attempted}, remaining credits: ${data.credits}`, true);
         } else {
-          setResp(`Failed: ${data.error||'Unknown error'} (needed: ${data.needed||'-'}, credits: ${data.credits||'-'})`, false);
+          // Show clearer error messages
+          if (r.status === 401 || r.status === 403) {
+            setResp(`Authentication failed. Please log in again. (Status: ${r.status})`, false);
+            authHeader = '';
+            loginModal.style.display = 'flex';
+          } else {
+            setResp(`Failed: ${data.error||'Unknown error'} (needed: ${data.needed||'-'}, credits: ${data.credits||'-'})`, false);
+          }
         }
       }catch(e){
         setResp('Network error: '+ e.message, false);

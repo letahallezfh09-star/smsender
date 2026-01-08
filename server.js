@@ -383,7 +383,10 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
     }
     const { sender, message, recipients, routeId } = req.body || {};
     if (!isNonEmptyString(sender)) return res.status(400).json({ ok:false, error:'Missing sender' });
-    if (getBlockedSenders().includes(sender.toLowerCase())) return res.status(400).json({ ok:false, error:'Sender name not allowed' });
+    const normalizedSender = sender.trim().toLowerCase();
+    if (getBlockedSenders().includes(normalizedSender)) {
+      return res.status(400).json({ ok:false, error:`Sender name "${sender}" is blocked. Please use a different sender name.` });
+    }
     if (!isNonEmptyString(message)) return res.status(400).json({ ok:false, error:'Missing message' });
     const msgCredits = calculateCreditsForMessage(message, sender);
     if (msgCredits === 0) return res.status(400).json({ ok:false, error:'Message cannot be empty' });
