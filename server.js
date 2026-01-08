@@ -33,6 +33,7 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-hashes'"],
+      scriptSrcAttr: ["'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
       imgSrc: ["'self'", "data:", "https:"],
@@ -688,25 +689,30 @@ app.post('/api/blocked-senders/set', requireRoleAuth('admin'), (req, res) => {
 
 // Admin: add blocked sender
 app.post('/api/blocked-senders/add', requireRoleAuth('admin'), (req, res) => {
-  const { sender } = req.body || {};
-  if (!isNonEmptyString(sender)) {
-    return res.status(400).json({ ok:false, error:'sender is required' });
+  try {
+    const { sender } = req.body || {};
+    if (!isNonEmptyString(sender)) {
+      return res.status(400).json({ ok:false, error:'sender is required' });
+    }
+    
+    const normalizedSender = sender.trim().toLowerCase();
+    if (normalizedSender.length > 20 || !/^[a-z0-9_-]+$/.test(normalizedSender)) {
+      return res.status(400).json({ ok:false, error:'Invalid sender name format' });
+    }
+    
+    const currentBlocked = getBlockedSenders();
+    if (currentBlocked.includes(normalizedSender)) {
+      return res.status(400).json({ ok:false, error:'Sender already blocked' });
+    }
+    
+    const newBlocked = [...currentBlocked, normalizedSender];
+    const after = writeStore({ blockedSenders: newBlocked });
+    appendLog({ type:'add_blocked_sender', sender: normalizedSender });
+    res.json({ ok:true, blockedSenders: after.blockedSenders });
+  } catch (error) {
+    console.error('Error adding blocked sender:', error);
+    res.status(500).json({ ok:false, error: error.message || 'Internal server error' });
   }
-  
-  const normalizedSender = sender.trim().toLowerCase();
-  if (normalizedSender.length > 20 || !/^[a-z0-9_-]+$/.test(normalizedSender)) {
-    return res.status(400).json({ ok:false, error:'Invalid sender name format' });
-  }
-  
-  const currentBlocked = getBlockedSenders();
-  if (currentBlocked.includes(normalizedSender)) {
-    return res.status(400).json({ ok:false, error:'Sender already blocked' });
-  }
-  
-  const newBlocked = [...currentBlocked, normalizedSender];
-  const after = writeStore({ blockedSenders: newBlocked });
-  appendLog({ type:'add_blocked_sender', sender: normalizedSender });
-  res.json({ ok:true, blockedSenders: after.blockedSenders });
 });
 
 // Admin: remove blocked sender
@@ -774,8 +780,15 @@ app.post('/api/sms/click', express.json({ type:'*/*' }), (req, res) => {
 // 404
 app.use((_req, res) => res.status(404).json({ ok:false, error:'Not found' }));
 
-// Favicon: avoid 404 noise
-app.get('/favicon.ico', (_req, res) => res.sendStatus(204));
+// Favicon: serve actual favicon
+app.get('/favicon.ico', (_req, res) => {
+  const faviconPath = path.join(__dirname, 'public', 'favicon.ico');
+  if (fs.existsSync(faviconPath)) {
+    res.sendFile(faviconPath);
+  } else {
+    res.sendStatus(204);
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`✅ SMSeem SMS proxy running on :${PORT}`);

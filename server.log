@@ -1,0 +1,34 @@
+
+> mobivate-proxy@1.0.0 start
+> node server.js
+
+✅ SMSeem SMS proxy running on :3000
+   UI:     http://localhost:3000/  (In-page login)
+   Health: http://localhost:3000/health
+📤 Sending SMS to SMSeem: {
+  "to": "0546934003",
+  "message": "Test message from SMSeem gateway",
+  "sender": "SMSeem"
+}
+❌ Error sending SMS: Request failed with status code 402
+❌ SMSeem error response: { error: 'Insufficient credits', balance: 0 }
+📤 Sending SMS to SMSeem: {
+  "to": "0546934003",
+  "message": "Test message from SMSeem gateway - credits added!",
+  "sender": "SMSeem"
+}
+📨 SMSeem API Response: {
+  "success": true,
+  "messageId": "api_1766858916965_QyCFJ1L3",
+  "creditsRemaining": 9,
+  "messageLength": 49,
+  "smsParts": 1
+}
+📨 SMSeem API Status: 200
+✅ SMSeem message sent: {
+  success: true,
+  messageId: 'api_1766858916965_QyCFJ1L3',
+  creditsRemaining: 9,
+  messageLength: 49,
+  smsParts: 1
+}
