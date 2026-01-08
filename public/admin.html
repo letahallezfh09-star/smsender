@@ -36,8 +36,9 @@
   <div class="wrap">
     <h1>Admin - Credits & Logs</h1>
 
-    <div class="row" style="margin:8px 0 12px">
-      <div class="stat" id="credits">Current credits: --</div>
+    <div class="row" style="margin:8px 0 12px; gap:8px; flex-wrap:wrap">
+      <div class="stat" id="apiCredits" style="color:#77bdfb">API Credits: --</div>
+      <div class="stat" id="localCredits" style="color:#4ade80">Local Credits (Office): --</div>
       <button class="btn" id="refresh">Refresh</button>
     </div>
 
@@ -157,10 +158,29 @@
     function buildAuth(user, pass){
       return 'Basic ' + btoa(user + ':' + pass);
     }
+    const apiCreditsEl = document.getElementById('apiCredits');
+    const localCreditsEl = document.getElementById('localCredits');
+    
     async function loadCredits(){
+      // Load local credits (for office use)
       const r = await fetch('/api/credits', { headers: { 'x-auth': authHeader } });
       const d = await r.json();
-      creditsEl.textContent = 'Current credits: ' + (d.credits ?? '--');
+      if (d.ok) {
+        localCreditsEl.textContent = 'Local Credits (Office): ' + (d.credits ?? '--');
+      }
+      
+      // Load API credits (from SMSeem)
+      try {
+        const r2 = await fetch('/api/balance', { headers: { 'x-auth': authHeader } });
+        const d2 = await r2.json();
+        if (d2.ok) {
+          apiCreditsEl.textContent = 'API Credits (SMSeem): ' + (d2.apiBalance ?? '--');
+        } else {
+          apiCreditsEl.textContent = 'API Credits: Error loading';
+        }
+      } catch(e) {
+        apiCreditsEl.textContent = 'API Credits: Error loading';
+      }
     }
     function isoToDateOnly(iso){
       try{ return new Date(iso).toISOString().slice(0,10); }catch{ return ''; }
