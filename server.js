@@ -323,6 +323,25 @@ function calculateCreditsFromCost(costUSD) {
 // Health
 app.get('/health', (_req, res) => res.json({ ok:true, service:'smseem-proxy', time:new Date().toISOString() }));
 
+// Debug endpoint (no auth required) - helps diagnose configuration issues
+app.get('/api/debug/config', (_req, res) => {
+  res.json({
+    ok: true,
+    config: {
+      hasSMSEEM_API_KEY: !!SMSEEM_API_KEY,
+      hasADMIN_USERNAME: !!ADMIN_USERNAME,
+      hasADMIN_PASSWORD: !!ADMIN_PASSWORD,
+      hasOFFICE_USERNAME: !!OFFICE_USERNAME,
+      hasOFFICE_PASSWORD: !!OFFICE_PASSWORD,
+      hasPROXY_API_KEY: !!PROXY_API_KEY && PROXY_API_KEY.trim() !== '',
+      adminUsername: ADMIN_USERNAME || '(not set)',
+      officeUsername: OFFICE_USERNAME || '(not set)',
+      defaultSender: DEFAULT_SENDER
+    },
+    note: 'This endpoint shows configuration status. Credentials are not shown for security.'
+  });
+});
+
 // Send single SMS (accepts 972-XXXXXXXXX, 972XXXXXXXXX, or 05XXXXXXXXX)
 app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req, res) => {
   try {
