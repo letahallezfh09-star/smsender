@@ -399,6 +399,20 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
     const responseData = r.data || {};
     if (responseData.success) {
       console.log('✅ SMSeem message sent:', responseData);
+      
+      // Check if we have enough local credits before sending
+      const storeBefore = readStore();
+      if (storeBefore.credits < msgCredits) {
+        return res.status(402).json({
+          ok:false,
+          error:`Insufficient credits. Required: ${msgCredits}, Available: ${storeBefore.credits}`
+        });
+      }
+      
+      // Deduct credits from local store (not from API response)
+      const newLocalCredits = storeBefore.credits - msgCredits;
+      const after = writeStore({ credits: newLocalCredits });
+      
       appendLog({
         type:'single_send',
         sender: payload.sender,
@@ -408,16 +422,18 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
         msgLen: String(message||'').length,
         msgCredits,
         messagePreview: message.slice(0, 40),
-        creditsRemaining: responseData.creditsRemaining
+        creditsBefore: storeBefore.credits,
+        creditsAfter: after.credits,
+        apiCreditsRemaining: responseData.creditsRemaining // Log API credits but don't use them
       });
-      const after = writeStore({ credits: responseData.creditsRemaining });
+      
       return res.status(200).json({
         ok:true,
         provider: responseData,
         messageId: responseData.messageId,
         status: 'sent',
         creditsUsed: msgCredits,
-        creditsRemaining: responseData.creditsRemaining
+        creditsRemaining: after.credits // Return local credits, not API credits
       });
     } else if (responseData.error) {
       console.error('❌ SMSeem returned error:', responseData.error);
@@ -514,10 +530,23 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
     if (responseData.success) {
       const sent = responseData.sent || 0;
       const failed = responseData.failed || 0;
-      const creditsUsed = responseData.creditsUsed || (sent * msgCredits);
-      const creditsRemaining = responseData.creditsRemaining;
+      // Calculate credits used based on successful sends and our calculation
+      const totalCreditsUsed = sent * msgCredits;
       
       console.log(`✅ SMSeem batch sent: ${sent} success, ${failed} failed`);
+      
+      // Check if we have enough local credits before processing
+      const storeBefore = readStore();
+      if (storeBefore.credits < totalCreditsUsed) {
+        return res.status(402).json({
+          ok:false,
+          error:`Insufficient credits. Required: ${totalCreditsUsed}, Available: ${storeBefore.credits}`
+        });
+      }
+      
+      // Deduct credits from local store (not from API response)
+      const newLocalCredits = storeBefore.credits - totalCreditsUsed;
+      const after = writeStore({ credits: newLocalCredits });
       
       appendLog({
         type:'batch_send',
@@ -527,14 +556,13 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
         failed: failed,
         msgLen: String(message||'').length,
         msgCredits,
-        totalCreditsUsed: creditsUsed,
+        totalCreditsUsed: totalCreditsUsed,
         messagePreview: message.slice(0, 40),
-        creditsAfter: creditsRemaining,
+        creditsBefore: storeBefore.credits,
+        creditsAfter: after.credits,
+        apiCreditsRemaining: responseData.creditsRemaining, // Log API credits but don't use them
         failedNumbers: responseData.failedNumbers || []
       });
-      
-      // Update credits from API response
-      const after = writeStore({ credits: creditsRemaining });
       
       return res.json({
         ok:true,
@@ -543,8 +571,8 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
         failed: failed,
         failedNumbers: responseData.failedNumbers || [],
         perMessage: msgCredits,
-        totalUsed: creditsUsed,
-        credits: after.credits,
+        totalUsed: totalCreditsUsed,
+        credits: after.credits, // Return local credits, not API credits
         provider: responseData
       });
     } else if (responseData.error) {
@@ -575,11 +603,11 @@ app.post('/api/sms/send-batch', requireProxyKey, requireRoleAuth('office'), asyn
   }
 });
 
-// Admin: get credits
+// Admin: get local credits (for office use)
 app.get('/api/credits', requireRoleAuth('admin'), (req, res) => {
   const store = readStore();
   res.set('Cache-Control', 'no-store');
-  res.json({ ok:true, credits: store.credits });
+  res.json({ ok:true, credits: store.credits, note: 'These are local credits used by office. Use /api/balance to see API credits.' });
 });
 
 // Admin: subscription info (credits + dueDate)
@@ -746,12 +774,15 @@ app.get('/api/balance', requireRoleAuth('admin'), async (req, res) => {
     
     const responseData = r.data || {};
     if (responseData.success) {
-      // Update local credits from API
-      writeStore({ credits: responseData.balance });
+      // Don't update local credits from API - keep them separate
+      // API credits are only for admin viewing, not for office use
+      const localStore = readStore();
       res.json({ 
         ok:true, 
-        balance: responseData.balance,
-        totalSent: responseData.totalSent || 0
+        apiBalance: responseData.balance, // API credits from SMSeem
+        localCredits: localStore.credits, // Local credits for office use
+        totalSent: responseData.totalSent || 0,
+        note: 'apiBalance shows SMSeem API credits. localCredits are used by office and set by admin.'
       });
     } else {
       res.status(400).json({ ok:false, error: responseData.error || 'Failed to fetch balance' });
