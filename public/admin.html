@@ -138,7 +138,7 @@
   <div id="loginModal" style="position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:9998; display:flex; align-items:center; justify-content:center;">
     <div style="background:#1a1f2a; border:1px solid #283142; color:#eaf0f6; padding:24px; border-radius:12px; max-width:420px; width:90%;">
       <h2 style="color:#77bdfb; margin-bottom:12px; text-align:center;">Admin Login</h2>
-      <form id="loginForm" style="display:grid; gap:10px;">
+      <div style="display:grid; gap:10px;">
         <div>
           <label>Username</label>
           <input id="lu" type="text" style="width:100%; background:#0d1117; border:1px solid #283142; color:#eaf0f6; padding:10px 12px; border-radius:10px;">
@@ -147,9 +147,9 @@
           <label>Password</label>
           <input id="lp" type="password" style="width:100%; background:#0d1117; border:1px solid #283142; color:#eaf0f6; padding:10px 12px; border-radius:10px;">
         </div>
-        <button class="btn" id="loginBtn" type="submit">Login</button>
+        <button class="btn" id="loginBtn">Login</button>
         <div class="error" id="loginErr" style="display:none; text-align:center;">Invalid credentials</div>
-      </form>
+      </div>
     </div>
   </div>
 
@@ -255,15 +255,10 @@
         div.style.display = 'flex';
         div.style.justifyContent = 'space-between';
         div.style.alignItems = 'center';
-        const span = document.createElement('span');
-        span.textContent = sender;
-        const btn = document.createElement('button');
-        btn.className = 'btn';
-        btn.style.cssText = 'background:#dc2626; padding:4px 8px; font-size:11px;';
-        btn.textContent = 'Remove';
-        btn.addEventListener('click', () => removeSender(sender));
-        div.appendChild(span);
-        div.appendChild(btn);
+        div.innerHTML = `
+          <span>${sender}</span>
+          <button class="btn" style="background:#dc2626; padding:4px 8px; font-size:11px;" onclick="removeSender('${sender}')">Remove</button>
+        `;
         blockedSendersList.appendChild(div);
       });
     }
@@ -389,7 +384,6 @@
     }
     loginBtn.addEventListener('click', tryLogin);
     lp.addEventListener('keypress', (e)=>{ if(e.key==='Enter') tryLogin(); });
-    document.getElementById('loginForm').addEventListener('submit', (e)=>{ e.preventDefault(); tryLogin(); });
   </script>
 </body>
 </html>

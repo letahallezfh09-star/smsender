@@ -259,14 +259,7 @@
     }
     async function tryLogin(){
       loginErr.style.display = 'none';
-      const username = lu.value.trim();
-      const password = lp.value.trim();
-      if (!username || !password) {
-        loginErr.textContent = 'Please enter both username and password';
-        loginErr.style.display = 'block';
-        return;
-      }
-      authHeader = buildAuth(username, password);
+      authHeader = buildAuth(lu.value.trim(), lp.value.trim());
       const r = await fetch('/api/credits/public', { headers: { 'x-auth': authHeader } });
       if (r.status === 200) {
         // hide any stale expired UI; we'll re-evaluate after auth
@@ -276,8 +269,6 @@
         fetchCredits();
       } else {
         authHeader = '';
-        const errorData = await r.json().catch(() => ({}));
-        loginErr.textContent = `Login failed (Status: ${r.status}). ${errorData.error || 'Please check your credentials.'}`;
         loginErr.style.display = 'block';
       }
     }
