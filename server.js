@@ -264,6 +264,14 @@ app.post('/api/sms/send', requireProxyKey, requireRoleAuth('office'), async (req
     }
     const { to, message, sender, routeId } = req.body || {};
     
+    // Check blocked sender
+    if (isNonEmptyString(sender)) {
+      const normalizedSender = sender.trim().toLowerCase();
+      if (getBlockedSenders().includes(normalizedSender)) {
+        return res.status(400).json({ ok:false, error:`Sender name "${sender}" is blocked. Please use a different sender name.` });
+      }
+    }
+    
     // Accept both 972 format and Israeli format (05X...)
     const phoneRegex = /^(972-?\d{9}|0\d{8,9})$/;
     if (!isNonEmptyString(to) || !phoneRegex.test(to)) {
