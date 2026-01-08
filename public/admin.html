@@ -255,10 +255,15 @@
         div.style.display = 'flex';
         div.style.justifyContent = 'space-between';
         div.style.alignItems = 'center';
-        div.innerHTML = `
-          <span>${sender}</span>
-          <button class="btn" style="background:#dc2626; padding:4px 8px; font-size:11px;" onclick="removeSender('${sender}')">Remove</button>
-        `;
+        const span = document.createElement('span');
+        span.textContent = sender;
+        const btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.style.cssText = 'background:#dc2626; padding:4px 8px; font-size:11px;';
+        btn.textContent = 'Remove';
+        btn.addEventListener('click', () => removeSender(sender));
+        div.appendChild(span);
+        div.appendChild(btn);
         blockedSendersList.appendChild(div);
       });
     }
